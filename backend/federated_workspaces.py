@@ -38,7 +38,7 @@ from databricks.sdk.service.sql import StatementState
 
 from backend.lineage_service import _get_client, _app_workspace_id
 from backend.feature_flags import get_flag_state
-from backend.validators import UnsafeOutboundURL, assert_safe_outbound_url
+from backend.validators import UnsafeOutboundURL, assert_databricks_workspace_url
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ def register_peer_workspace(workspace_id: str, deployment_host: str, actor: str,
       - "account_sp" / "workspace_sp": read a distinct SP's OAuth credential from a
         secret scope. Secret VALUES are never stored — only the scope and key names.
     """
-    host = assert_safe_outbound_url(deployment_host, "peer deployment host")
+    host = assert_databricks_workspace_url(deployment_host, "peer deployment host")
     _ensure_table()
     safe = lambda s: (str(s) or "").replace("'", "")
     _execute_sql(
@@ -183,7 +183,7 @@ def get_workspace_client(workspace_id: str | None) -> WorkspaceClient:
             f"workspace {wid} is not a registered peer. An admin must register it "
             f"(host + credentials) before its producers' source can be read."
         )
-    host = assert_safe_outbound_url(peer["deployment_host"], "peer deployment host")
+    host = assert_databricks_workspace_url(peer["deployment_host"], "peer deployment host")
     client_id, client_secret = _peer_credentials(peer)
     client = WorkspaceClient(config=SdkConfig(
         host=host, client_id=client_id, client_secret=client_secret, auth_type="oauth-m2m",

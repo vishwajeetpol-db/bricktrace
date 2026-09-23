@@ -168,3 +168,49 @@ def assert_safe_outbound_url(url: object, what: str = "URL") -> str:
                 f"{what} host {host!r} resolves to a non-public address ({ip})"
             )
     return raw
+
+
+# Databricks workspace control-plane domains, per cloud. A cross-workspace client
+# only ever targets one of these.
+_DATABRICKS_WORKSPACE_SUFFIXES = (
+    ".azuredatabricks.net",     # Azure
+    ".cloud.databricks.com",    # AWS
+    ".gcp.databricks.com",      # GCP
+)
+
+
+def assert_databricks_workspace_url(url: object, what: str = "workspace host") -> str:
+    """Validate an ADMIN-REGISTERED Databricks workspace host for a cross-workspace
+    API client. Return the URL if safe, else raise.
+
+    Requires https, no embedded credentials, and a Databricks workspace domain
+    suffix. Unlike `assert_safe_outbound_url`, it does NOT reject private-IP
+    resolution: a real Databricks workspace reached from inside the cloud network
+    legitimately resolves to a private address (e.g. an Azure workspace seen from
+    an app running in that cloud). The trust anchors here are instead the domain
+    allowlist below plus the admin-gated registration of the peer — this validator
+    is only ever applied to a host an admin explicitly registered, never to a
+    per-request, caller-supplied URL (that path keeps `assert_safe_outbound_url`).
+    """
+    from urllib.parse import urlsplit
+
+    raw = str(url or "").strip()
+    if not raw:
+        raise UnsafeOutboundURL(f"{what} is empty")
+    try:
+        parts = urlsplit(raw)
+    except Exception as e:
+        raise UnsafeOutboundURL(f"{what} is not parseable: {e}") from e
+    if parts.scheme.lower() != "https":
+        raise UnsafeOutboundURL(f"{what} must use https (got {parts.scheme or 'no scheme'!r})")
+    if parts.username or parts.password:
+        raise UnsafeOutboundURL(f"{what} must not embed credentials")
+    host = (parts.hostname or "").lower()
+    if not host:
+        raise UnsafeOutboundURL(f"{what} has no host")
+    if not any(host.endswith(s) for s in _DATABRICKS_WORKSPACE_SUFFIXES):
+        raise UnsafeOutboundURL(
+            f"{what} {host!r} is not a Databricks workspace domain "
+            f"(must end with one of {', '.join(_DATABRICKS_WORKSPACE_SUFFIXES)})"
+        )
+    return raw

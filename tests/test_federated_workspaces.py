@@ -44,7 +44,7 @@ class TestGetWorkspaceClient:
              patch.object(fw, "get_flag_state", return_value=True), \
              patch.object(fw, "get_peer", return_value=peer), \
              patch.object(fw, "_read_secret", side_effect=["CID", "CSEC"]), \
-             patch.object(fw, "assert_safe_outbound_url", side_effect=lambda u, *a: u), \
+             patch.object(fw, "assert_databricks_workspace_url", side_effect=lambda u, *a: u), \
              patch.object(fw, "SdkConfig", return_value=MagicMock()), \
              patch.object(fw, "WorkspaceClient", return_value=built) as WC:
             c1 = fw.get_workspace_client("222")
@@ -61,7 +61,7 @@ class TestGetWorkspaceClient:
         with patch.object(fw, "_app_workspace_id", return_value="111"), \
              patch.object(fw, "get_flag_state", return_value=True), \
              patch.object(fw, "get_peer", return_value=peer), \
-             patch.object(fw, "assert_safe_outbound_url", side_effect=lambda u, *a: u), \
+             patch.object(fw, "assert_databricks_workspace_url", side_effect=lambda u, *a: u), \
              patch.object(fw, "SdkConfig", return_value=MagicMock()) as SC, \
              patch.object(fw, "WorkspaceClient", return_value=built), \
              patch.dict("os.environ", {"DATABRICKS_CLIENT_ID": "app-cid",
@@ -79,7 +79,7 @@ class TestGetWorkspaceClient:
         with patch.object(fw, "_app_workspace_id", return_value="111"), \
              patch.object(fw, "get_flag_state", return_value=True), \
              patch.object(fw, "get_peer", return_value=peer), \
-             patch.object(fw, "assert_safe_outbound_url", side_effect=lambda u, *a: u), \
+             patch.object(fw, "assert_databricks_workspace_url", side_effect=lambda u, *a: u), \
              patch.dict("os.environ", {"DATABRICKS_CLIENT_ID": "", "DATABRICKS_CLIENT_SECRET": ""}):
             with pytest.raises(RuntimeError):
                 fw.get_workspace_client("222")
@@ -90,7 +90,7 @@ class TestGetWorkspaceClient:
         with patch.object(fw, "_app_workspace_id", return_value="111"), \
              patch.object(fw, "get_flag_state", return_value=True), \
              patch.object(fw, "get_peer", return_value=peer), \
-             patch.object(fw, "assert_safe_outbound_url",
+             patch.object(fw, "assert_databricks_workspace_url",
                           side_effect=fw.UnsafeOutboundURL("blocked")):
             with pytest.raises(fw.UnsafeOutboundURL):
                 fw.get_workspace_client("222")
