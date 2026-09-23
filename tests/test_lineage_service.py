@@ -149,6 +149,29 @@ class TestExecuteSql:
 
 
 # ---------------------------------------------------------------------------
+# App workspace id (cross-workspace guard support)
+# ---------------------------------------------------------------------------
+class TestAppWorkspaceId:
+    def test_returns_and_caches(self):
+        ls._app_workspace_id_cache = None
+        client = MagicMock()
+        client.get_workspace_id.return_value = 12345
+        with patch.object(ls, "_get_client", return_value=client):
+            assert ls._app_workspace_id() == "12345"
+            assert ls._app_workspace_id() == "12345"  # served from cache
+        client.get_workspace_id.assert_called_once()
+        ls._app_workspace_id_cache = None
+
+    def test_fails_open_to_none(self):
+        ls._app_workspace_id_cache = None
+        client = MagicMock()
+        client.get_workspace_id.side_effect = RuntimeError("no perms")
+        with patch.object(ls, "_get_client", return_value=client):
+            assert ls._app_workspace_id() is None
+        ls._app_workspace_id_cache = None
+
+
+# ---------------------------------------------------------------------------
 # Graph building + classification
 # ---------------------------------------------------------------------------
 class TestGraphBuild:
@@ -194,6 +217,26 @@ class TestGraphBuild:
         pairs = {(e.source, e.target) for e in resp.edges}
         assert ("main.s.src", "entity:PIPELINE:p1") in pairs
         assert ("entity:PIPELINE:p1", "main.s.out") in pairs
+        # No workspace_id in the row → node carries None (backward compatible)
+        assert ent[0].workspace_id is None
+
+    def test_entity_node_captures_workspace_id(self):
+        """Phase 0: the producer's emitting workspace_id flows onto the node,
+        coerced to str, so cross-workspace producers can be told apart."""
+        client = MagicMock()
+        rows = [{
+            "source_table_full_name": "main.s.src", "source_type": "TABLE",
+            "target_table_full_name": "main.s.out", "target_type": "TABLE",
+            "entity_type": "PIPELINE", "entity_id": "p1",
+            "event_time": "2026-07-01T00:00:00Z", "created_by": "me@x.com",
+            "workspace_id": 7405616972951593,  # numeric in the system table
+        }]
+        with patch.object(ls, "_execute_sql", return_value=[]), \
+             patch.object(ls, "_entity_cost", return_value=None), \
+             patch.object(ls, "_maybe_refresh_cost_cache"):
+            resp = ls._build_graph_from_rows(client, rows)
+        ent = [n for n in resp.nodes if getattr(n, "node_type", None) == "entity"]
+        assert ent and ent[0].workspace_id == "7405616972951593"
 
     def test_build_graph_read_after_write_no_back_edge(self):
         """A table the entity WRITES then reads back becomes a direct table edge."""

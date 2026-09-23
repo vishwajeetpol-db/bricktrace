@@ -67,6 +67,27 @@ def _get_client() -> WorkspaceClient:
     return _client_instance
 
 
+_app_workspace_id_cache: str | None = None
+
+
+def _app_workspace_id() -> str | None:
+    """The numeric id of the workspace the app runs in, as a string.
+
+    Lineage is metastore-wide, so a producer's recorded workspace_id may differ
+    from this — that mismatch is what marks a producer's source as unreachable
+    from here (cross-workspace fetch is Phase 2; see docs/FEDERATED_LINEAGE_DESIGN.md).
+    Cached; fail-open to None so a lookup failure never blocks the graph.
+    """
+    global _app_workspace_id_cache
+    if _app_workspace_id_cache is None:
+        try:
+            _app_workspace_id_cache = str(_get_client().get_workspace_id())
+        except Exception as e:
+            logger.warning(f"could not resolve app workspace id: {e}")
+            return None
+    return _app_workspace_id_cache
+
+
 # ---------------------------------------------------------------------------
 # Per-user query identity (A1)
 #
@@ -875,7 +896,8 @@ def _fetch_lineage_trace(seed_full_name: str) -> LineageResponse:
             in_list = ",".join("'" + t.replace("'", "''") + "'" for t in frontier)
             sql = f"""
             SELECT source_table_full_name, target_table_full_name, source_type, target_type,
-                   source_path, target_path, entity_type, entity_id, event_time, created_by
+                   source_path, target_path, entity_type, entity_id, event_time, created_by,
+                   workspace_id
             FROM system.access.table_lineage
             WHERE {match_col} IN ({in_list})
               AND event_time > current_date() - INTERVAL {LINEAGE_WINDOW_DAYS} DAYS
@@ -996,7 +1018,9 @@ def _build_graph_from_rows(client: WorkspaceClient, lineage_rows: list[dict], tr
         etype, eid = r.get("entity_type"), r.get("entity_id")
         if etype and eid:
             key = f"entity:{etype}:{eid}"
-            info = entity_map.setdefault(key, {"type": etype, "id": eid, "sources": set(), "targets": set(), "last_run": None, "owner": r.get("created_by")})
+            info = entity_map.setdefault(key, {"type": etype, "id": eid, "sources": set(), "targets": set(), "last_run": None, "owner": r.get("created_by"), "workspace_id": None})
+            if info.get("workspace_id") is None and r.get("workspace_id") is not None:
+                info["workspace_id"] = str(r.get("workspace_id"))
             if sref:
                 info["sources"].add(sref)
             if tref:
@@ -1043,7 +1067,8 @@ def _build_graph_from_rows(client: WorkspaceClient, lineage_rows: list[dict], tr
 
     for key, info in entity_map.items():
         nodes_map[key] = EntityNode(id=key, entity_type=info["type"], entity_id=info["id"],
-                                    last_run=info["last_run"], owner=info["owner"])
+                                    last_run=info["last_run"], owner=info["owner"],
+                                    workspace_id=info.get("workspace_id"))
         c = _entity_cost(info["type"], info["id"])
         if c is not None:
             nodes_map[key].cost_usd = c
@@ -1247,7 +1272,8 @@ def _fetch_table_lineage(catalog: str, schema: str | None, cache_key: str) -> tu
         entity_type,
         entity_id,
         event_time,
-        created_by
+        created_by,
+        workspace_id
     FROM system.access.table_lineage
     WHERE (
         {lineage_scope_filter}
@@ -1322,8 +1348,10 @@ def _fetch_table_lineage(catalog: str, schema: str | None, cache_key: str) -> tu
                 entity_map[entity_key] = {
                     "type": etype, "id": eid,
                     "sources": set(), "targets": set(),
-                    "last_run": None, "owner": None,
+                    "last_run": None, "owner": None, "workspace_id": None,
                 }
+            if entity_map[entity_key].get("workspace_id") is None and row.get("workspace_id") is not None:
+                entity_map[entity_key]["workspace_id"] = str(row.get("workspace_id"))
             if src:
                 entity_map[entity_key]["sources"].add(src)
             if tgt:
@@ -1382,7 +1410,8 @@ def _fetch_table_lineage(catalog: str, schema: str | None, cache_key: str) -> tu
             entity_type,
             entity_id,
             event_time,
-            created_by
+            created_by,
+            workspace_id
         FROM system.access.table_lineage
         WHERE entity_id IN ({eid_list})
         AND event_time > current_date() - INTERVAL {LINEAGE_WINDOW_DAYS} DAYS
@@ -1408,6 +1437,8 @@ def _fetch_table_lineage(catalog: str, schema: str | None, cache_key: str) -> tu
                 entity_key = f"entity:{etype}:{eid}"
                 if entity_key not in entity_map:
                     continue  # skip entities that were pruned
+                if entity_map[entity_key].get("workspace_id") is None and row.get("workspace_id") is not None:
+                    entity_map[entity_key]["workspace_id"] = str(row.get("workspace_id"))
                 if src:
                     entity_map[entity_key]["sources"].add(src)
                     if src not in schema_tables and src_type:
@@ -1523,6 +1554,7 @@ def _fetch_table_lineage(catalog: str, schema: str | None, cache_key: str) -> tu
             entity_id=info["id"],
             last_run=info["last_run"],
             owner=info["owner"],
+            workspace_id=info.get("workspace_id"),
         )
 
     # Annotate JOB and PIPELINE nodes with cost from the pre-aggregated cache.

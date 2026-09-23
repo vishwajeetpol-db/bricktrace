@@ -23,6 +23,10 @@ class EntityNode(BaseModel):
     id: str  # "entity:{type}:{id}"
     entity_type: str  # JOB, NOTEBOOK, PIPELINE, QUERY
     entity_id: str
+    # Workspace that emitted this producer's lineage event (system.access.*.workspace_id).
+    # Metastore-wide lineage means a producer can live in a DIFFERENT workspace than the
+    # app; this records which. None when the lineage row carried no workspace_id.
+    workspace_id: Optional[str] = None
     display_name: Optional[str] = None
     last_run: Optional[str] = None  # ISO timestamp of latest lineage event
     owner: Optional[str] = None

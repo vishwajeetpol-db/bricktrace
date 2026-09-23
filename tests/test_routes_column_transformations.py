@@ -187,14 +187,15 @@ class TestProducerAuthorization:
         assert resp.status_code == 200
         mock_analyze.assert_called_once()
 
-    def test_admin_bypasses_the_producer_check(self, admin_client):
-        # Admins already have the broader access the guard is protecting.
-        with patch("backend.routes.lineage._execute_sql") as mock_sql, \
+    def test_admin_bypasses_the_recorded_producer_check(self, admin_client):
+        # Admins skip the recorded-producer 403, but the guard query still runs so
+        # the cross-workspace check can fire. With no workspace_id in the row it
+        # fails open and the analysis proceeds.
+        with patch("backend.routes.lineage._execute_sql", return_value=[]), \
              patch("backend.routes.lineage.analyze_producer",
                    return_value={"source": "llm", "columns": []}):
             resp = admin_client.post("/api/analyze-producer", json=self._NB)
         assert resp.status_code == 200
-        mock_sql.assert_not_called()
 
     def test_lookup_failure_fails_closed(self, app_client):
         # If the lineage check can't run we refuse rather than trusting the caller.
@@ -212,6 +213,74 @@ class TestProducerAuthorization:
                 "entity_type": "NOTEBOOK", "entity_id": "/Users/someone-else/private"})
         assert resp.status_code == 403
         mock_stream.assert_not_called()
+
+
+class TestCrossWorkspaceGuard:
+    """Phase 0 (FEDERATED_LINEAGE_DESIGN): lineage is metastore-wide, so a
+    recorded producer may run in another workspace. Its source is fetched via
+    THIS workspace's client and would 404 opaquely — refuse up front with 409."""
+
+    _JOB = {"entity_type": "JOB", "entity_id": "123", "target_table": "c.s.t"}
+
+    def test_cross_workspace_producer_refused_409(self, app_client):
+        # Recorded producer, but its workspace_id differs from the app's own.
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999_other"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111_this"), \
+             patch("backend.routes.lineage.analyze_producer") as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 409
+        assert "cannot reach" in resp.json()["detail"]
+        assert "999_other" in resp.json()["detail"]
+        mock_analyze.assert_not_called()
+
+    def test_same_workspace_producer_allowed(self, app_client):
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "111_this"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111_this"), \
+             patch("backend.routes.lineage.analyze_producer",
+                   return_value={"source": "llm", "columns": []}) as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 200
+        mock_analyze.assert_called_once()
+
+    def test_admin_still_gets_cross_workspace_guard(self, admin_client):
+        # Admins skip the recorded-producer 403 but a cross-workspace fetch would
+        # still fail, so the 409 guard applies to them too.
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999_other"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111_this"), \
+             patch("backend.routes.lineage.analyze_producer") as mock_analyze:
+            resp = admin_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 409
+        mock_analyze.assert_not_called()
+
+    def test_missing_workspace_id_fails_open(self, app_client):
+        # Row has no workspace_id → cannot compare → proceed (don't block on gaps).
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": None}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111_this"), \
+             patch("backend.routes.lineage.analyze_producer",
+                   return_value={"source": "llm", "columns": []}) as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 200
+        mock_analyze.assert_called_once()
+
+    def test_unknown_app_workspace_fails_open(self, app_client):
+        # App workspace id unresolved → proceed rather than block.
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999_other"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value=None), \
+             patch("backend.routes.lineage.analyze_producer",
+                   return_value={"source": "llm", "columns": []}) as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 200
+        mock_analyze.assert_called_once()
+
+    def test_cross_workspace_guard_on_column_transformations(self, app_client):
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999_other"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111_this"), \
+             patch("backend.routes.lineage.resolve_column_transformations") as mock_resolve:
+            resp = app_client.post("/api/column-transformations", json={
+                "catalog": "c", "schema_name": "s", "table": "t",
+                "entity_type": "PIPELINE", "entity_id": "8d348b20"})
+        assert resp.status_code == 409
+        mock_resolve.assert_not_called()
 
 
 class TestStoredSourceRedaction:
