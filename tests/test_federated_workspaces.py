@@ -96,33 +96,29 @@ class TestGetWorkspaceClient:
                 fw.get_workspace_client("222")
 
 
-class TestEntitlementPrecheck:
-    def _acl(self, principal, level):
-        return {"access_control_list": [
-            {"user_name": principal, "all_permissions": [{"permission_level": level}]}
-        ]}
+class TestTargetTableEntitlement:
+    """The precheck verifies the REQUESTING user can access the TARGET table via
+    information_schema, run as the user (get_read_client). No CAN_MANAGE, no
+    cross-workspace ACL read. Fails closed."""
 
-    def test_user_with_view_ok(self):
-        client = MagicMock()
-        client.api_client.do.return_value = self._acl("u@x.com", "CAN_VIEW")
-        with patch.object(fw, "get_workspace_client", return_value=client):
-            assert fw.user_can_view_in_peer("222", "u@x.com", "PIPELINE", "p1") is True
+    def test_user_with_access_ok(self):
+        import backend.lineage_service as ls
+        with patch.object(ls, "get_read_client", return_value=MagicMock()), \
+             patch.object(ls, "_execute_sql", return_value=[{"1": 1}]):
+            assert fw.user_can_access_target_table("cat.sch.tbl") is True
 
     def test_user_without_access_denied(self):
-        client = MagicMock()
-        client.api_client.do.return_value = self._acl("other@x.com", "CAN_MANAGE")
-        with patch.object(fw, "get_workspace_client", return_value=client):
-            assert fw.user_can_view_in_peer("222", "u@x.com", "PIPELINE", "p1") is False
+        import backend.lineage_service as ls
+        with patch.object(ls, "get_read_client", return_value=MagicMock()), \
+             patch.object(ls, "_execute_sql", return_value=[]):  # UC hides the row
+            assert fw.user_can_access_target_table("cat.sch.tbl") is False
 
-    def test_unknown_entity_type_denied(self):
-        # NOTEBOOK uses numeric object ids, not id-addressable here -> fail closed.
-        assert fw.user_can_view_in_peer("222", "u@x.com", "NOTEBOOK", "/Users/x/nb") is False
+    def test_malformed_name_denied(self):
+        assert fw.user_can_access_target_table("cat.sch") is False
+        assert fw.user_can_access_target_table("") is False
 
     def test_error_fails_closed(self):
-        client = MagicMock()
-        client.api_client.do.side_effect = RuntimeError("403 permission denied")
-        with patch.object(fw, "get_workspace_client", return_value=client):
-            assert fw.user_can_view_in_peer("222", "u@x.com", "JOB", "1") is False
-
-    def test_no_user_name_denied(self):
-        assert fw.user_can_view_in_peer("222", "", "JOB", "1") is False
+        import backend.lineage_service as ls
+        with patch.object(ls, "get_read_client", return_value=MagicMock()), \
+             patch.object(ls, "_execute_sql", side_effect=RuntimeError("no identity")):
+            assert fw.user_can_access_target_table("cat.sch.tbl") is False

@@ -125,7 +125,7 @@ def _assert_producer_of(entity_type: str, entity_id: str, target_table: str,
 
 
 def _resolve_fetch_workspace(producer_ws: Optional[str], entity_type: str, entity_id: str,
-                             user_name: str) -> Optional[str]:
+                             target_table: str) -> Optional[str]:
     """Decide which workspace to fetch a producer's source from.
 
     Returns None to fetch locally (producer is in the app's own workspace, or the
@@ -134,15 +134,15 @@ def _resolve_fetch_workspace(producer_ws: Optional[str], entity_type: str, entit
         raise the honest 409 (lineage spans workspaces; source fetch does not).
       - Phase 2: with the flag on AND a registered peer, run the per-user
         entitlement precheck (§7.6) — the fetch runs as the account SP, so the
-        REQUESTING user must be entitled to the object in the peer — then return
-        the peer workspace_id so the fetch is routed there. Fails closed (403).
+        REQUESTING user must be able to access the TARGET table themselves — then
+        return the peer workspace_id so the fetch is routed there. Fails closed (403).
     """
     producer_ws = str(producer_ws) if producer_ws else None
     app_ws = _app_workspace_id()
     if not producer_ws or not app_ws or producer_ws == app_ws:
         return None  # local (or unknown → fail open to the local path)
 
-    from backend.federated_workspaces import get_peer, user_can_view_in_peer, FLAG
+    from backend.federated_workspaces import get_peer, user_can_access_target_table, FLAG
     from backend.feature_flags import get_flag_state
 
     honest_409 = HTTPException(
@@ -156,12 +156,12 @@ def _resolve_fetch_workspace(producer_ws: Optional[str], entity_type: str, entit
     )
     if not get_flag_state(FLAG) or not get_peer(producer_ws):
         raise honest_409
-    if not user_can_view_in_peer(producer_ws, user_name, entity_type, entity_id):
+    if not user_can_access_target_table(target_table):
         raise HTTPException(
             status_code=403,
             detail=(
-                f"You don't have access to {entity_type} {entity_id} in workspace "
-                f"{producer_ws}, so its source can't be fetched on your behalf."
+                f"You don't have access to {target_table}, so the source of its "
+                f"cross-workspace producer can't be fetched on your behalf."
             ),
         )
     return producer_ws
@@ -460,7 +460,7 @@ async def analyze_producer_endpoint(request: Request, body: AnalyzeProducerIn):
     # nominate an arbitrary workspace object as the "producer". Admins skip the
     # recorded-producer authz but still get the cross-workspace guard.
     producer_ws = await asyncio.to_thread(_assert_producer_of, et, eid, body.target_table, not is_admin)
-    fetch_ws = await asyncio.to_thread(_resolve_fetch_workspace, producer_ws, et, eid, email or "")
+    fetch_ws = await asyncio.to_thread(_resolve_fetch_workspace, producer_ws, et, eid, body.target_table)
     try:
         return analyze_producer(
             entity_type=et,
@@ -521,7 +521,7 @@ async def column_transformations(request: Request, body: ColumnTransformIn):
     fetch_ws = None
     if et and eid:
         producer_ws = await asyncio.to_thread(_assert_producer_of, et, eid, f"{c}.{s}.{t}", not is_admin)
-        fetch_ws = await asyncio.to_thread(_resolve_fetch_workspace, producer_ws, et, eid, email or "")
+        fetch_ws = await asyncio.to_thread(_resolve_fetch_workspace, producer_ws, et, eid, f"{c}.{s}.{t}")
     try:
         return resolve_column_transformations(
             catalog=c, schema=s, table=t,
@@ -636,7 +636,7 @@ async def column_transformation_deep_analyze(request: Request, body: CTDeepAnaly
     # verify the producer actually writes this table before either happens.
     # Admins skip the recorded-producer authz but still get the cross-workspace guard.
     producer_ws = await asyncio.to_thread(_assert_producer_of, et, eid, full, not is_admin)
-    fetch_ws = await asyncio.to_thread(_resolve_fetch_workspace, producer_ws, et, eid, email or "")
+    fetch_ws = await asyncio.to_thread(_resolve_fetch_workspace, producer_ws, et, eid, full)
 
     def gen():
         try:

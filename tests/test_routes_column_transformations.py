@@ -297,7 +297,7 @@ class TestCrossWorkspacePhase2:
              patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
              patch("backend.feature_flags.get_flag_state", return_value=True), \
              patch("backend.federated_workspaces.get_peer", return_value={"workspace_id": "999"}), \
-             patch("backend.federated_workspaces.user_can_view_in_peer", return_value=True), \
+             patch("backend.federated_workspaces.user_can_access_target_table", return_value=True), \
              patch("backend.routes.lineage.analyze_producer",
                    return_value={"source": "llm", "columns": []}) as mock_analyze:
             resp = app_client.post("/api/analyze-producer", json=self._JOB)
@@ -310,7 +310,7 @@ class TestCrossWorkspacePhase2:
              patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
              patch("backend.feature_flags.get_flag_state", return_value=True), \
              patch("backend.federated_workspaces.get_peer", return_value={"workspace_id": "999"}), \
-             patch("backend.federated_workspaces.user_can_view_in_peer", return_value=False), \
+             patch("backend.federated_workspaces.user_can_access_target_table", return_value=False), \
              patch("backend.routes.lineage.analyze_producer") as mock_analyze:
             resp = app_client.post("/api/analyze-producer", json=self._JOB)
         assert resp.status_code == 403

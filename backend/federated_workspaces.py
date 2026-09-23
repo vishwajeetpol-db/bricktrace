@@ -225,39 +225,33 @@ def evict_peer_client(workspace_id: str) -> None:
 # Per-user entitlement precheck (design §7.6)
 # ---------------------------------------------------------------------------
 
-# object_type -> permissions API path segment. Notebook/file use numeric object
-# ids (resolved separately); job/pipeline/query use their ids directly.
-_PERM_PATH = {"JOB": "jobs", "PIPELINE": "pipelines", "QUERY": "queries"}
-# Permission levels that imply the user may view the object's definition/source.
-_VIEW_LEVELS = {"CAN_VIEW", "CAN_READ", "CAN_RUN", "CAN_MANAGE", "CAN_MANAGE_RUN", "IS_OWNER"}
+def user_can_access_target_table(target_table: str) -> bool:
+    """Does the REQUESTING user have UC access (SELECT/BROWSE) to `target_table`?
 
+    The cross-workspace source fetch runs as the account SP, which can read more
+    than the user. Before explaining how a table was built on the user's behalf,
+    verify the user could see that (derived) table themselves. This is checked
+    metastore-wide via information_schema, run as the USER — `get_read_client()`
+    honors ENFORCE_USER_IDENTITY — so it needs no CAN_MANAGE and no cross-workspace
+    ACL read, and it naturally reflects group- and admin-granted access (which an
+    object-ACL scan would miss). The target table lives in Unity Catalog, which is
+    metastore-wide, so this runs on the app's own warehouse.
 
-def user_can_view_in_peer(workspace_id: str, user_name: str,
-                          entity_type: str, entity_id: str) -> bool:
-    """Does `user_name` have >= view access to (entity_type, entity_id) in the peer?
-
-    The fetch runs as the account SP, which can read more than the user; this
-    precheck stops the SP becoming an exfiltration path. Checked by reading the
-    object's ACL in the peer (as the SP) and looking for the user principal.
-
-    Fails CLOSED: any error, unknown object type, or missing principal -> False.
+    Fails CLOSED: a malformed name, an unresolved user identity, or any error -> False.
     """
-    et = (entity_type or "").strip().upper()
-    seg = _PERM_PATH.get(et)
-    if not seg or not user_name:
+    parts = (target_table or "").split(".")
+    if len(parts) != 3:
         return False
+    cat, sch, tbl = parts  # each is [A-Za-z0-9_]+ (validated by the route's _FULL_NAME_RE)
     try:
-        client = get_workspace_client(workspace_id)
-        acl = client.api_client.do("GET", f"/api/2.0/permissions/{seg}/{entity_id}")
+        from backend.lineage_service import get_read_client, _execute_sql
+        client = get_read_client()  # the USER's client when ENFORCE_USER_IDENTITY is on
+        rows = _execute_sql(
+            client,
+            f"SELECT 1 FROM `{cat}`.information_schema.tables "
+            f"WHERE table_schema = '{sch}' AND table_name = '{tbl}' LIMIT 1",
+        )
+        return bool(rows)
     except Exception as e:
-        logger.warning(f"entitlement precheck failed for {user_name} on {et} {entity_id} "
-                       f"in ws {workspace_id}: {e}")
+        logger.warning(f"target-table access precheck failed for {target_table}: {e}")
         return False
-    for entry in (acl or {}).get("access_control_list", []) or []:
-        principal = entry.get("user_name") or entry.get("service_principal_name") or entry.get("group_name")
-        if principal != user_name:
-            continue
-        for perm in entry.get("all_permissions", []) or []:
-            if (perm.get("permission_level") or "").upper() in _VIEW_LEVELS:
-                return True
-    return False
