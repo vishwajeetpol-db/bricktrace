@@ -252,10 +252,15 @@ def _fetch_pipeline_source(pipeline_id: str, diag: Optional["_FetchDiag"] = None
         try:
             raw = client.api_client.do("GET", f"/api/2.0/pipelines/{pipeline_id}")
         except Exception as e:
+            logger.warning(f"producer_source: pipeline GET failed for {pipeline_id} "
+                           f"(client host={getattr(getattr(client,'config',None),'host',None)}): {e}")
             if diag is not None:
                 diag.note_exception(f"pipeline:{pipeline_id}", e)
             raw = {}
         libraries = ((raw.get("spec") or {}).get("libraries")) or []
+        if raw and not libraries:
+            logger.info(f"producer_source: pipeline {pipeline_id} spec keys={list((raw.get('spec') or {}).keys())} "
+                        f"(top-level keys={list(raw.keys())}) — no 'libraries' found")
         parts: list[str] = []
         seen: set[str] = set()
 
