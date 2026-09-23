@@ -171,6 +171,19 @@ class TestAppWorkspaceId:
         ls._app_workspace_id_cache = None
 
 
+class TestEntityKey:
+    def test_namespaced_when_workspace_present(self):
+        assert ls._entity_key("JOB", "123", "999") == "entity:999:JOB:123"
+
+    def test_legacy_when_workspace_missing(self):
+        # None or empty falls back to the 3-part legacy id (older callers/fixtures)
+        assert ls._entity_key("JOB", "123", None) == "entity:JOB:123"
+        assert ls._entity_key("JOB", "123", "") == "entity:JOB:123"
+
+    def test_numeric_workspace_coerced(self):
+        assert ls._entity_key("PIPELINE", "p1", 999) == "entity:999:PIPELINE:p1"
+
+
 # ---------------------------------------------------------------------------
 # Graph building + classification
 # ---------------------------------------------------------------------------
@@ -237,6 +250,48 @@ class TestGraphBuild:
             resp = ls._build_graph_from_rows(client, rows)
         ent = [n for n in resp.nodes if getattr(n, "node_type", None) == "entity"]
         assert ent and ent[0].workspace_id == "7405616972951593"
+
+    def test_entity_node_id_is_workspace_namespaced(self):
+        """When workspace_id is present the node id carries it, and the edges that
+        reference the entity use the SAME namespaced id (no orphan edges)."""
+        client = MagicMock()
+        rows = [{
+            "source_table_full_name": "main.s.src", "source_type": "TABLE",
+            "target_table_full_name": "main.s.out", "target_type": "TABLE",
+            "entity_type": "JOB", "entity_id": "123",
+            "event_time": "2026-07-01T00:00:00Z", "created_by": "me@x.com",
+            "workspace_id": "999",
+        }]
+        with patch.object(ls, "_execute_sql", return_value=[]), \
+             patch.object(ls, "_entity_cost", return_value=None), \
+             patch.object(ls, "_maybe_refresh_cost_cache"):
+            resp = ls._build_graph_from_rows(client, rows)
+        ent = [n for n in resp.nodes if getattr(n, "node_type", None) == "entity"]
+        assert ent and ent[0].id == "entity:999:JOB:123"
+        # edges reference the SAME namespaced id
+        pairs = {(e.source, e.target) for e in resp.edges}
+        assert ("main.s.src", "entity:999:JOB:123") in pairs
+        assert ("entity:999:JOB:123", "main.s.out") in pairs
+
+    def test_two_workspaces_same_job_id_are_distinct_nodes(self):
+        """The collision Phase 0 closes: job 123 in two workspaces must NOT collapse."""
+        client = MagicMock()
+        rows = [
+            {"source_table_full_name": "main.s.a", "source_type": "TABLE",
+             "target_table_full_name": "main.s.b", "target_type": "TABLE",
+             "entity_type": "JOB", "entity_id": "123", "workspace_id": "111",
+             "event_time": "2026-07-01T00:00:00Z", "created_by": "x"},
+            {"source_table_full_name": "main.s.c", "source_type": "TABLE",
+             "target_table_full_name": "main.s.d", "target_type": "TABLE",
+             "entity_type": "JOB", "entity_id": "123", "workspace_id": "222",
+             "event_time": "2026-07-01T00:00:00Z", "created_by": "x"},
+        ]
+        with patch.object(ls, "_execute_sql", return_value=[]), \
+             patch.object(ls, "_entity_cost", return_value=None), \
+             patch.object(ls, "_maybe_refresh_cost_cache"):
+            resp = ls._build_graph_from_rows(client, rows)
+        ent_ids = {n.id for n in resp.nodes if getattr(n, "node_type", None) == "entity"}
+        assert ent_ids == {"entity:111:JOB:123", "entity:222:JOB:123"}
 
     def test_build_graph_read_after_write_no_back_edge(self):
         """A table the entity WRITES then reads back becomes a direct table edge."""

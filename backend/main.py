@@ -967,7 +967,10 @@ async def api_export_lineage(
         for n in result.nodes:
             if getattr(n, "node_type", None) == "entity":
                 if n.display_name:
-                    entity_names[n.id] = n.display_name
+                    # Key by the non-namespaced (type, id) form: via_label() in
+                    # excel_export looks names up as f"entity:{etype}:{eid}", and the
+                    # node id is now workspace-namespaced (entity:{ws}:{type}:{id}).
+                    entity_names[f"entity:{n.entity_type}:{n.entity_id}"] = n.display_name
                 else:
                     entity_keys.add((n.entity_type, n.entity_id))
         for e in table_edges:

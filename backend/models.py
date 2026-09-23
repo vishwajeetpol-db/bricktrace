@@ -20,7 +20,7 @@ class TableNode(BaseModel):
 
 class EntityNode(BaseModel):
     node_type: Literal["entity"] = "entity"
-    id: str  # "entity:{type}:{id}"
+    id: str  # "entity:{workspace_id}:{type}:{id}" (or legacy "entity:{type}:{id}" when ws unknown)
     entity_type: str  # JOB, NOTEBOOK, PIPELINE, QUERY
     entity_id: str
     # Workspace that emitted this producer's lineage event (system.access.*.workspace_id).

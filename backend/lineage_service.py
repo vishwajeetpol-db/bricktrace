@@ -88,6 +88,24 @@ def _app_workspace_id() -> str | None:
     return _app_workspace_id_cache
 
 
+def _entity_key(entity_type: str, entity_id: str, workspace_id: object = None) -> str:
+    """Graph node id for a producer entity.
+
+    Namespaced by workspace_id — `entity:{workspace_id}:{type}:{id}` — so the same
+    (type, id) in two workspaces (e.g. numeric JOB ids or notebook paths, which are
+    workspace-scoped) do NOT collapse into one node. Falls back to the legacy
+    `entity:{type}:{id}` when the workspace is unknown, keeping older callers and
+    fixtures valid. An entity's workspace_id is constant across its lineage rows,
+    so node ids and the edges that reference them stay consistent.
+
+    Opaque to the frontend (it matches on the `entity:` prefix and reads the
+    entity_type/entity_id fields, never parsing this string).
+    """
+    if workspace_id is not None and str(workspace_id):
+        return f"entity:{workspace_id}:{entity_type}:{entity_id}"
+    return f"entity:{entity_type}:{entity_id}"
+
+
 # ---------------------------------------------------------------------------
 # Per-user query identity (A1)
 #
@@ -1017,7 +1035,7 @@ def _build_graph_from_rows(client: WorkspaceClient, lineage_rows: list[dict], tr
             _ensure_table(tref, ttype)
         etype, eid = r.get("entity_type"), r.get("entity_id")
         if etype and eid:
-            key = f"entity:{etype}:{eid}"
+            key = _entity_key(etype, eid, r.get("workspace_id"))
             info = entity_map.setdefault(key, {"type": etype, "id": eid, "sources": set(), "targets": set(), "last_run": None, "owner": r.get("created_by"), "workspace_id": None})
             if info.get("workspace_id") is None and r.get("workspace_id") is not None:
                 info["workspace_id"] = str(r.get("workspace_id"))
@@ -1097,7 +1115,7 @@ def _build_graph_from_rows(client: WorkspaceClient, lineage_rows: list[dict], tr
             table_pair_set.add((sref, tref))
         etype, eid = r.get("entity_type"), r.get("entity_id")
         if etype and eid:
-            key = f"entity:{etype}:{eid}"
+            key = _entity_key(etype, eid, r.get("workspace_id"))
             if tref:
                 edge_set.add((key, tref))
             if sref:
@@ -1343,7 +1361,7 @@ def _fetch_table_lineage(catalog: str, schema: str | None, cache_key: str) -> tu
 
         # Entity-mediated rows: collect ALL without filtering — pruned below
         if etype and eid:
-            entity_key = f"entity:{etype}:{eid}"
+            entity_key = _entity_key(etype, eid, row.get("workspace_id"))
             if entity_key not in entity_map:
                 entity_map[entity_key] = {
                     "type": etype, "id": eid,
@@ -1434,7 +1452,7 @@ def _fetch_table_lineage(catalog: str, schema: str | None, cache_key: str) -> tu
                 eid = row.get("entity_id")
                 if not etype or not eid:
                     continue
-                entity_key = f"entity:{etype}:{eid}"
+                entity_key = _entity_key(etype, eid, row.get("workspace_id"))
                 if entity_key not in entity_map:
                     continue  # skip entities that were pruned
                 if entity_map[entity_key].get("workspace_id") is None and row.get("workspace_id") is not None:
@@ -1600,7 +1618,7 @@ def _fetch_table_lineage(catalog: str, schema: str | None, cache_key: str) -> tu
         et, eid = row.get("entity_type"), row.get("entity_id")
         if not (et and eid):
             continue
-        info = entity_map.get(f"entity:{et}:{eid}")
+        info = entity_map.get(_entity_key(et, eid, row.get("workspace_id")))
         if not info:
             continue
         sref, _ = _parse_lineage_ref(row.get("source_table_full_name"), row.get("source_path"), row.get("source_type"))
