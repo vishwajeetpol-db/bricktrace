@@ -158,7 +158,8 @@ def _apply_trace_patch():
                 in_list = ",".join("'" + t.replace("'", "''") + "'" for t in frontier)
                 sql = f"""
                 SELECT source_table_full_name, target_table_full_name, source_type, target_type,
-                       source_path, target_path, entity_type, entity_id, event_time, created_by
+                       source_path, target_path, entity_type, entity_id, event_time, created_by,
+                       workspace_id
                 FROM system.access.table_lineage
                 WHERE {match_col} IN ({in_list})
                   AND event_time > current_date() - INTERVAL {ls.LINEAGE_WINDOW_DAYS} DAYS
