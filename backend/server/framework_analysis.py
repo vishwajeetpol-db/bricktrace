@@ -151,13 +151,19 @@ def _focus_on_target(obj: object, target: str, keys: tuple[str, ...] = _TARGET_K
     return obj, matched
 
 
-def _fetch_entity_parameters(entity_type: str, entity_id: str) -> dict:
+def _fetch_entity_parameters(entity_type: str, entity_id: str,
+                             source_workspace_id: Optional[str] = None) -> dict:
     """Best-effort read of a producer's parameters (pipeline configuration or job
-    parameters / notebook base_parameters). Returns {} on any failure."""
-    from backend.lineage_service import _get_client
+    parameters / notebook base_parameters). Returns {} on any failure.
+
+    Routed to the producer's workspace (Phase 2) when source_workspace_id is set —
+    these are workspace-local control-plane reads, unlike the metastore-wide config
+    TABLE reads below."""
+    from backend.server.producer_source import _source_client, fetch_workspace
     et = (entity_type or "").upper()
     try:
-        client = _get_client()
+        with fetch_workspace(source_workspace_id):
+            client = _source_client()
         if client is None:
             return {}
         if et == "PIPELINE":
@@ -271,6 +277,7 @@ def _resolve_config_alternates(name: str, target_table: str) -> list[str]:
 def deep_analyze_stream(
     entity_type: str, entity_id: str, target_table: str,
     actor: str = "", model: Optional[str] = None,
+    source_workspace_id: Optional[str] = None,
 ) -> Iterator[dict]:
     """Run the framework fallback, yielding commentary events then a final
     `result` event with derived columns (and the saved version)."""
@@ -278,7 +285,7 @@ def deep_analyze_stream(
     yield _ev("start", "running", "Primary analysis found no columns — this looks like a metadata-driven framework. Starting deep analysis.")
 
     # 1. Source
-    source_code = _fetch_source(et, entity_id)
+    source_code = _fetch_source(et, entity_id, source_workspace_id=source_workspace_id)
     if not source_code.strip():
         yield _ev("fetch_source", "error", "Could not read the producer's source code, so config detection isn't possible.")
         yield {"type": "result", "columns": [], "derived": False, "reason_code": "no_source",
@@ -315,7 +322,7 @@ def deep_analyze_stream(
 
     # 3. Parameters
     yield _ev("params", "running", "Reading the producer's parameters…")
-    params = _fetch_entity_parameters(et, entity_id)
+    params = _fetch_entity_parameters(et, entity_id, source_workspace_id=source_workspace_id)
     picked = {k: params[k] for k in params_wanted if k in params} or params
     yield _ev("params", "ok" if picked else "warn",
               f"Found {len(picked)} parameter value(s)." if picked else "No matching parameter values found.",

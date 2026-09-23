@@ -31,6 +31,7 @@ class TestAnalyzeProducer:
         # _assert_producer_of is patched out here: this test covers the handler, and
         # the guard itself has dedicated coverage in TestProducerAuthorization.
         with patch("backend.routes.lineage._assert_producer_of"), \
+             patch("backend.routes.lineage._resolve_fetch_workspace", return_value=None), \
              patch("backend.routes.lineage.analyze_producer",
                    return_value={"source": "llm", "columns": [], "version": 1}):
             resp = app_client.post("/api/analyze-producer", json={
@@ -122,6 +123,7 @@ class TestColumnTransformations:
             {"type": "result", "derived": True, "columns": [{"target_column": "x"}], "version": 3},
         ]
         with patch("backend.routes.lineage._assert_producer_of"), \
+             patch("backend.routes.lineage._resolve_fetch_workspace", return_value=None), \
              patch("backend.server.framework_analysis.deep_analyze_stream",
                    return_value=iter(events)):
             resp = app_client.post("/api/column-transformations/deep-analyze", json={
@@ -137,6 +139,7 @@ class TestColumnTransformations:
         def boom(*a, **k):
             raise RuntimeError("mid-flight")
         with patch("backend.routes.lineage._assert_producer_of"), \
+             patch("backend.routes.lineage._resolve_fetch_workspace", return_value=None), \
              patch("backend.server.framework_analysis.deep_analyze_stream", side_effect=boom):
             resp = app_client.post("/api/column-transformations/deep-analyze", json={
                 "catalog": "c", "schema_name": "s", "table": "t",
@@ -281,6 +284,47 @@ class TestCrossWorkspaceGuard:
                 "entity_type": "PIPELINE", "entity_id": "8d348b20"})
         assert resp.status_code == 409
         mock_resolve.assert_not_called()
+
+
+class TestCrossWorkspacePhase2:
+    """With the live_source_fetch flag ON and a registered, entitled peer, the
+    fetch is ROUTED to the peer workspace instead of 409ing (design §7)."""
+
+    _JOB = {"entity_type": "PIPELINE", "entity_id": "8d348b20", "target_table": "c.s.t"}
+
+    def test_registered_entitled_peer_routes_fetch(self, app_client):
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
+             patch("backend.feature_flags.get_flag_state", return_value=True), \
+             patch("backend.federated_workspaces.get_peer", return_value={"workspace_id": "999"}), \
+             patch("backend.federated_workspaces.user_can_view_in_peer", return_value=True), \
+             patch("backend.routes.lineage.analyze_producer",
+                   return_value={"source": "llm", "columns": []}) as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 200
+        # the fetch is routed to the producer's home workspace
+        assert mock_analyze.call_args.kwargs.get("source_workspace_id") == "999"
+
+    def test_registered_but_not_entitled_403(self, app_client):
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
+             patch("backend.feature_flags.get_flag_state", return_value=True), \
+             patch("backend.federated_workspaces.get_peer", return_value={"workspace_id": "999"}), \
+             patch("backend.federated_workspaces.user_can_view_in_peer", return_value=False), \
+             patch("backend.routes.lineage.analyze_producer") as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 403
+        mock_analyze.assert_not_called()
+
+    def test_flag_on_but_peer_unregistered_still_409(self, app_client):
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
+             patch("backend.feature_flags.get_flag_state", return_value=True), \
+             patch("backend.federated_workspaces.get_peer", return_value=None), \
+             patch("backend.routes.lineage.analyze_producer") as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 409
+        mock_analyze.assert_not_called()
 
 
 class TestStoredSourceRedaction:

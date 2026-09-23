@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import os
 import logging
+import contextlib
+from contextvars import ContextVar
 from typing import Optional
 
 from databricks.sdk.service.workspace import ExportFormat
@@ -32,6 +34,36 @@ from backend.server import llm as llm_client
 from backend.server import analysis_store
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Cross-workspace source routing (Phase 2). A producer may live in another
+# workspace; when the caller has resolved+authorized that, it sets this context
+# so every source fetch below runs against the peer's client instead of the
+# app's own. Default (None) = the app's own workspace, unchanged.
+# See backend/federated_workspaces.py and docs/FEDERATED_LINEAGE_DESIGN.md §7.
+# ---------------------------------------------------------------------------
+_fetch_workspace_ctx: ContextVar[Optional[str]] = ContextVar("fetch_workspace", default=None)
+
+
+@contextlib.contextmanager
+def fetch_workspace(workspace_id: Optional[str]):
+    """Route source fetches in this block to `workspace_id` (None = local app)."""
+    token = _fetch_workspace_ctx.set(workspace_id)
+    try:
+        yield
+    finally:
+        _fetch_workspace_ctx.reset(token)
+
+
+def _source_client():
+    """The client to fetch producer source with — the peer's when a cross-workspace
+    fetch is in scope (set via fetch_workspace()), else the app's own."""
+    wid = _fetch_workspace_ctx.get()
+    if wid:
+        from backend.federated_workspaces import get_workspace_client
+        return get_workspace_client(wid)
+    return _get_client()
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +125,7 @@ def _fetch_notebook_source(notebook_id: str, diag: Optional["_FetchDiag"] = None
     makes the SDK raise `'str' object has no attribute 'value'`.
     """
     import base64
-    client = _get_client()
+    client = _source_client()
     try:
         resp = client.workspace.export(path=notebook_id, format=ExportFormat.SOURCE)
         content = resp.content or ""
@@ -113,7 +145,7 @@ def _fetch_workspace_file(path: str, diag: Optional["_FetchDiag"] = None) -> str
     workspace files need the download API instead, which returns raw bytes.
     Falls back to the notebook export path if download isn't available.
     """
-    client = _get_client()
+    client = _source_client()
     try:
         resp = client.workspace.download(path)
         data = resp.read() if hasattr(resp, "read") else resp
@@ -132,7 +164,7 @@ def _fetch_workspace_file(path: str, diag: Optional["_FetchDiag"] = None) -> str
 def _fetch_query_source(query_id: str, diag: Optional["_FetchDiag"] = None) -> str:
     """Fetch the SQL text of a saved DBSQL query."""
     try:
-        client = _get_client()
+        client = _source_client()
         q = client.queries.get(id=query_id)
         return q.query or ""
     except Exception as e:
@@ -145,7 +177,7 @@ def _fetch_query_source(query_id: str, diag: Optional["_FetchDiag"] = None) -> s
 def _fetch_job_source(job_id: str, diag: Optional["_FetchDiag"] = None) -> str:
     """Fetch source code of the first notebook task in a Lakeflow Job."""
     try:
-        client = _get_client()
+        client = _source_client()
         job = client.jobs.get(job_id=int(job_id))
         tasks = (job.settings.tasks or []) if job.settings else []
         for task in tasks:
@@ -174,7 +206,7 @@ def _list_workspace_source_files(
     workspace files rather than declared notebooks. Best-effort: returns [] on
     any error and caps the walk to avoid pathological trees.
     """
-    client = _get_client()
+    client = _source_client()
     found: list[str] = []
     stack = [root]
     while stack and len(found) < max_files:
@@ -212,7 +244,7 @@ def _fetch_pipeline_source(pipeline_id: str, diag: Optional["_FetchDiag"] = None
     "LLM unavailable").
     """
     try:
-        client = _get_client()
+        client = _source_client()
         # Read the RAW pipeline spec via the REST API rather than the typed SDK
         # object: the `glob` library field is newer than some SDK versions in our
         # supported range, and an older SDK silently drops unrecognized fields on
@@ -285,28 +317,35 @@ def _fetch_target_columns(target_table: str) -> list[str]:
         return []
 
 
-def _fetch_source(entity_type: str, entity_id: str, diag: Optional["_FetchDiag"] = None) -> str:
-    """Dispatch source-code fetch to the right fetcher."""
-    et = entity_type.upper()
-    if et == "NOTEBOOK":
-        return _fetch_notebook_source(entity_id, diag=diag)
-    if et == "QUERY":
-        return _fetch_query_source(entity_id, diag=diag)
-    if et == "JOB":
-        return _fetch_job_source(entity_id, diag=diag)
-    if et == "PIPELINE":
-        return _fetch_pipeline_source(entity_id, diag=diag)
-    return ""
+def _fetch_source(entity_type: str, entity_id: str, diag: Optional["_FetchDiag"] = None,
+                  source_workspace_id: Optional[str] = None) -> str:
+    """Dispatch source-code fetch to the right fetcher.
+
+    `source_workspace_id` (Phase 2) routes the fetch to a peer workspace when the
+    producer lives there; None keeps the app's own workspace.
+    """
+    with fetch_workspace(source_workspace_id):
+        et = entity_type.upper()
+        if et == "NOTEBOOK":
+            return _fetch_notebook_source(entity_id, diag=diag)
+        if et == "QUERY":
+            return _fetch_query_source(entity_id, diag=diag)
+        if et == "JOB":
+            return _fetch_job_source(entity_id, diag=diag)
+        if et == "PIPELINE":
+            return _fetch_pipeline_source(entity_id, diag=diag)
+        return ""
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def _current_source_hash(entity_type: str, entity_id: str) -> Optional[str]:
+def _current_source_hash(entity_type: str, entity_id: str,
+                         source_workspace_id: Optional[str] = None) -> Optional[str]:
     """Hash the producer's CURRENT source, for stale-detection. None if unreadable."""
     try:
-        src = _fetch_source(entity_type, entity_id)
+        src = _fetch_source(entity_type, entity_id, source_workspace_id=source_workspace_id)
         return analysis_store._source_hash(src) if src.strip() else None
     except Exception:
         return None
@@ -320,6 +359,7 @@ def analyze_producer(
     force_rerun: bool = False,
     target_columns: Optional[list[str]] = None,
     model: Optional[str] = None,
+    source_workspace_id: Optional[str] = None,
 ) -> dict:
     """Run (or load) Approach A analysis for a producer entity.
 
@@ -350,7 +390,7 @@ def analyze_producer(
     if not force_rerun:
         latest = analysis_store.get_latest_version(entity_type, entity_id, target_table)
         if latest is not None:
-            cur_hash = _current_source_hash(entity_type, entity_id)
+            cur_hash = _current_source_hash(entity_type, entity_id, source_workspace_id=source_workspace_id)
             result.update({
                 "source": "stored",
                 "columns": latest["columns"],
@@ -372,7 +412,7 @@ def analyze_producer(
 
     # ---- Fresh analysis path ----
     diag = _FetchDiag()
-    source_code = _fetch_source(entity_type, entity_id, diag=diag)
+    source_code = _fetch_source(entity_type, entity_id, diag=diag, source_workspace_id=source_workspace_id)
     if not source_code.strip():
         if diag.access_denied:
             # The producer's code exists but the app service principal can't read
@@ -518,6 +558,7 @@ def resolve_column_transformations(
     actor: str = "",
     force_rerun: bool = False,
     model: Optional[str] = None,
+    source_workspace_id: Optional[str] = None,
 ) -> dict:
     """Resolve a table's per-column transformation lineage using the same
     precedence the reference tool uses, best-source-first:
@@ -627,6 +668,7 @@ def resolve_column_transformations(
         actor=actor,
         force_rerun=force_rerun,
         model=model,
+        source_workspace_id=source_workspace_id,
     )
     # analyze_producer already returns source in {stored, llm, unavailable};
     # normalize into this resolver's envelope.

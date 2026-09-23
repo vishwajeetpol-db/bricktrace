@@ -110,7 +110,7 @@ class TestAnalyzeProducerReasonCode:
     def test_access_denied_reason_code(self):
         from backend.server import producer_source as ps
 
-        def fake_fetch(entity_type, entity_id, diag=None):
+        def fake_fetch(entity_type, entity_id, diag=None, source_workspace_id=None):
             if diag is not None:
                 diag.note_exception("/Workspace/x/nb", RuntimeError("PERMISSION_DENIED"))
             return ""
