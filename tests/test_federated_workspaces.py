@@ -37,7 +37,7 @@ class TestGetWorkspaceClient:
 
     def test_builds_and_caches_peer_client(self):
         peer = {"workspace_id": "222", "deployment_host": "https://peer.cloud.databricks.com",
-                "secret_scope": "sc", "client_id_key": "cid_key",
+                "auth_kind": "account_sp", "secret_scope": "sc", "client_id_key": "cid_key",
                 "client_secret_key": "csec_key", "enabled": True}
         built = MagicMock()
         with patch.object(fw, "_app_workspace_id", return_value="111"), \
@@ -51,6 +51,38 @@ class TestGetWorkspaceClient:
             c2 = fw.get_workspace_client("222")  # served from cache
         assert c1 is built and c2 is built
         WC.assert_called_once()  # only built once, then cached
+
+    def test_app_sp_uses_env_credentials(self):
+        # The app's own SP is the account SP (a member of the peer) — reuse the
+        # ambient OAuth creds instead of a secret scope.
+        peer = {"workspace_id": "222", "deployment_host": "https://peer.cloud.databricks.com",
+                "auth_kind": "app_sp", "enabled": True}
+        built = MagicMock()
+        with patch.object(fw, "_app_workspace_id", return_value="111"), \
+             patch.object(fw, "get_flag_state", return_value=True), \
+             patch.object(fw, "get_peer", return_value=peer), \
+             patch.object(fw, "assert_safe_outbound_url", side_effect=lambda u, *a: u), \
+             patch.object(fw, "SdkConfig", return_value=MagicMock()) as SC, \
+             patch.object(fw, "WorkspaceClient", return_value=built), \
+             patch.dict("os.environ", {"DATABRICKS_CLIENT_ID": "app-cid",
+                                        "DATABRICKS_CLIENT_SECRET": "app-csec"}):
+            client = fw.get_workspace_client("222")
+        assert client is built
+        # built from the app's ambient creds against the peer host
+        kw = SC.call_args.kwargs
+        assert kw["client_id"] == "app-cid" and kw["client_secret"] == "app-csec"
+        assert kw["host"] == "https://peer.cloud.databricks.com"
+
+    def test_app_sp_missing_env_creds_raises(self):
+        peer = {"workspace_id": "222", "deployment_host": "https://peer.cloud.databricks.com",
+                "auth_kind": "app_sp", "enabled": True}
+        with patch.object(fw, "_app_workspace_id", return_value="111"), \
+             patch.object(fw, "get_flag_state", return_value=True), \
+             patch.object(fw, "get_peer", return_value=peer), \
+             patch.object(fw, "assert_safe_outbound_url", side_effect=lambda u, *a: u), \
+             patch.dict("os.environ", {"DATABRICKS_CLIENT_ID": "", "DATABRICKS_CLIENT_SECRET": ""}):
+            with pytest.raises(RuntimeError):
+                fw.get_workspace_client("222")
 
     def test_ssrf_guard_rejects_bad_host(self):
         peer = {"workspace_id": "222", "deployment_host": "http://169.254.169.254",

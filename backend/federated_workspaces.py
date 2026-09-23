@@ -115,15 +115,22 @@ def get_peer(workspace_id: str) -> dict | None:
     return None
 
 
-def register_peer_workspace(workspace_id: str, deployment_host: str, secret_scope: str,
-                            client_id_key: str, client_secret_key: str, actor: str,
-                            display_name: str = "", auth_kind: str = "account_sp",
-                            enabled: bool = True) -> dict:
+def register_peer_workspace(workspace_id: str, deployment_host: str, actor: str,
+                            secret_scope: str = "", client_id_key: str = "",
+                            client_secret_key: str = "", display_name: str = "",
+                            auth_kind: str = "app_sp", enabled: bool = True) -> dict:
     """Admin-curated registration. Caller MUST admin-gate this.
 
     The host is SSRF-validated at registration AND again at connect time (the row
-    could be edited out of band). Secret VALUES are never stored — only the scope
-    and key names the app SP reads at connect time.
+    could be edited out of band).
+
+    auth_kind:
+      - "app_sp" (default): the app's OWN service principal is an account SP that's
+        also a member of the peer; the factory reuses the app's ambient OAuth
+        credentials (DATABRICKS_CLIENT_ID/SECRET) against the peer host. No secret
+        scope needed — nothing extra is stored.
+      - "account_sp" / "workspace_sp": read a distinct SP's OAuth credential from a
+        secret scope. Secret VALUES are never stored — only the scope and key names.
     """
     host = assert_safe_outbound_url(deployment_host, "peer deployment host")
     _ensure_table()
@@ -135,7 +142,8 @@ def register_peer_workspace(workspace_id: str, deployment_host: str, secret_scop
         f"'{safe(client_secret_key)}', {'true' if enabled else 'false'}, "
         f"'{safe(actor)}', current_timestamp())"
     )
-    return {"workspace_id": str(workspace_id), "deployment_host": host, "enabled": enabled}
+    return {"workspace_id": str(workspace_id), "deployment_host": host,
+            "auth_kind": auth_kind, "enabled": enabled}
 
 
 def _read_secret(scope: str, key: str) -> str:
@@ -173,17 +181,38 @@ def get_workspace_client(workspace_id: str | None) -> WorkspaceClient:
     if not peer:
         raise PeerNotRegistered(
             f"workspace {wid} is not a registered peer. An admin must register it "
-            f"(host + account-SP secret) before its producers' source can be read."
+            f"(host + credentials) before its producers' source can be read."
         )
     host = assert_safe_outbound_url(peer["deployment_host"], "peer deployment host")
-    client_id = _read_secret(peer["secret_scope"], peer["client_id_key"])
-    client_secret = _read_secret(peer["secret_scope"], peer["client_secret_key"])
+    client_id, client_secret = _peer_credentials(peer)
     client = WorkspaceClient(config=SdkConfig(
         host=host, client_id=client_id, client_secret=client_secret, auth_type="oauth-m2m",
     ))
     with _peer_clients_lock:
         _peer_clients[wid] = client
     return client
+
+
+def _peer_credentials(peer: dict) -> tuple[str, str]:
+    """OAuth (client_id, client_secret) for a peer, per its auth_kind.
+
+    - "app_sp": the app's OWN service principal is an account SP and a member of the
+      peer, so reuse the ambient OAuth credentials the Apps runtime injected
+      (DATABRICKS_CLIENT_ID/SECRET). Nothing to store or read from a scope.
+    - otherwise: a distinct SP whose credential lives in a secret scope.
+    """
+    auth_kind = (peer.get("auth_kind") or "app_sp").lower()
+    if auth_kind == "app_sp":
+        client_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
+        client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "")
+        if not client_id or not client_secret:
+            raise RuntimeError(
+                "app_sp auth needs the app's own OAuth credentials in the environment "
+                "(DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET); they were not found."
+            )
+        return client_id, client_secret
+    return (_read_secret(peer["secret_scope"], peer["client_id_key"]),
+            _read_secret(peer["secret_scope"], peer["client_secret_key"]))
 
 
 def evict_peer_client(workspace_id: str) -> None:
