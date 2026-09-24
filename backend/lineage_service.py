@@ -1641,6 +1641,47 @@ def _fetch_table_lineage(catalog: str, schema: str | None, cache_key: str) -> tu
     return result, lineage_ok
 
 
+def _resolve_notebook_path(entity_id: str, workspace_id: object = None) -> str | None:
+    """Resolve a NOTEBOOK producer's workspace PATH so its source can be exported.
+
+    Lineage identifies notebooks by numeric workspace object id (e.g. "627491938131442"),
+    but the Workspace export API needs a "/"-path. A path-like id is returned unchanged;
+    a numeric id is looked up in the audit log (`request_params['notebookId']` → 'path'),
+    the same source `resolve_entity_name` uses for the display name. Cached; None if it
+    can't be resolved. `workspace_id` (Phase 2) disambiguates when the same object id
+    could exist in more than one workspace of the metastore.
+    """
+    if not entity_id:
+        return None
+    if "/" in entity_id:
+        return entity_id
+    if not _SAFE_ENTITY_ID_RE.match(entity_id):
+        return None
+    cache_key = f"notebook_path:{workspace_id or ''}:{entity_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached or None
+    ws_filter = ""
+    if workspace_id and str(workspace_id).isdigit():
+        ws_filter = f" AND workspace_id = '{workspace_id}'"
+    path = None
+    try:
+        rows = _execute_sql(get_read_client(), f"""
+            SELECT request_params['path'] AS path
+            FROM system.access.audit
+            WHERE request_params['notebookId'] = '{entity_id}'
+              AND request_params['path'] IS NOT NULL{ws_filter}
+            LIMIT 1
+        """)
+        if rows and rows[0].get("path"):
+            path = rows[0]["path"]
+    except Exception as e:
+        logger.info(f"_resolve_notebook_path: could not resolve notebook id {entity_id}: {e}")
+    if path:
+        _cache_set(cache_key, path)
+    return path
+
+
 def resolve_entity_name(entity_type: str, entity_id: str) -> dict:
     """Resolve an entity ID to display name + metadata via system tables.
 
@@ -1689,23 +1730,14 @@ def resolve_entity_name(entity_type: str, entity_id: str) -> dict:
                 result["name"] = rows[0]["name"]
                 resolved = True
         elif entity_type == "NOTEBOOK":
-            if "/" in entity_id:
-                result["name"] = entity_id.split("/")[-1]
+            # Numeric workspace object ids are resolved to a path via the audit log
+            # (shared with the source-fetch path); a "/"-path id is returned as-is.
+            path = _resolve_notebook_path(entity_id)
+            if path:
+                result["name"] = path.rsplit("/", 1)[-1]
                 resolved = True
             else:
-                # Numeric workspace object ID — resolve via audit log
-                nb_rows = _execute_sql(client, f"""
-                    SELECT request_params['path'] AS path
-                    FROM system.access.audit
-                    WHERE request_params['notebookId'] = '{entity_id}'
-                      AND request_params['path'] IS NOT NULL
-                    LIMIT 1
-                """)
-                if nb_rows and nb_rows[0].get("path"):
-                    result["name"] = nb_rows[0]["path"].rsplit("/", 1)[-1]
-                    resolved = True
-                else:
-                    result["name"] = f"Notebook {entity_id[:12]}"
+                result["name"] = f"Notebook {entity_id[:12]}"
     except Exception as e:
         logger.warning(f"Failed to resolve {entity_type} {entity_id}: {e}")
 

@@ -125,16 +125,29 @@ def _fetch_notebook_source(notebook_id: str, diag: Optional["_FetchDiag"] = None
     makes the SDK raise `'str' object has no attribute 'value'`.
     """
     import base64
+    # Lineage identifies a NOTEBOOK producer by numeric workspace object id, but the
+    # export API needs a "/"-path. Resolve it (audit-log lookup, shared with name
+    # resolution); a path-like id passes straight through. Job/pipeline callers already
+    # pass a real notebook_path, so this is a no-op for them.
+    path = notebook_id
+    if notebook_id and "/" not in notebook_id:
+        from backend.lineage_service import _resolve_notebook_path
+        path = _resolve_notebook_path(notebook_id, workspace_id=_fetch_workspace_ctx.get())
+        if not path:
+            logger.info(f"producer_source: could not resolve notebook id {notebook_id} to a path")
+            if diag is not None:
+                diag.entity_missing = True
+            return ""
     client = _source_client()
     try:
-        resp = client.workspace.export(path=notebook_id, format=ExportFormat.SOURCE)
+        resp = client.workspace.export(path=path, format=ExportFormat.SOURCE)
         content = resp.content or ""
         # The export API returns base64-encoded content.
         return base64.b64decode(content).decode("utf-8", errors="replace")
     except Exception as e:
-        logger.info(f"producer_source: could not export notebook {notebook_id}: {e}")
+        logger.info(f"producer_source: could not export notebook {path}: {e}")
         if diag is not None:
-            diag.note_exception(notebook_id, e)
+            diag.note_exception(path, e)
         return ""
 
 

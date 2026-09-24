@@ -461,6 +461,34 @@ class TestEntityNameAndCost:
             out = ls.resolve_entity_name("JOB", "123")
         assert isinstance(out, dict)
 
+    def test_resolve_notebook_path_returns_path_id_unchanged(self):
+        # A "/"-path id is a path already — no audit lookup needed.
+        with patch.object(ls, "_execute_sql") as mock_sql:
+            out = ls._resolve_notebook_path("/Users/x/nb")
+        assert out == "/Users/x/nb"
+        mock_sql.assert_not_called()
+
+    def test_resolve_notebook_path_resolves_numeric_id_via_audit(self):
+        ls.invalidate_cache("notebook_path:")
+        with patch.object(ls, "get_read_client", return_value=MagicMock()), \
+             patch.object(ls, "_execute_sql",
+                          return_value=[{"path": "/Users/x/My Notebook"}]) as mock_sql:
+            out = ls._resolve_notebook_path("627491938131442")
+        assert out == "/Users/x/My Notebook"
+        # the numeric id was interpolated into the audit query
+        assert "627491938131442" in mock_sql.call_args[0][1]
+
+    def test_resolve_notebook_path_unresolvable_returns_none(self):
+        ls.invalidate_cache("notebook_path:")
+        with patch.object(ls, "get_read_client", return_value=MagicMock()), \
+             patch.object(ls, "_execute_sql", return_value=[]):
+            assert ls._resolve_notebook_path("999999999999999") is None
+
+    def test_resolve_notebook_path_rejects_unsafe_id(self):
+        with patch.object(ls, "_execute_sql") as mock_sql:
+            assert ls._resolve_notebook_path("1; DROP TABLE x") is None
+        mock_sql.assert_not_called()
+
     def test_refresh_cost_cache_populates(self):
         client = MagicMock()
         rows = [{"id": "j1", "cost_usd": 12.5}]
