@@ -9,6 +9,7 @@ vi.mock("framer-motion", () => ({
   AnimatePresence: ({ children }: any) => children,
 }));
 
+vi.mock("./layout/SideNav", () => ({ default: () => <div data-testid="sidenav" /> }));
 vi.mock("../api/client", () => ({
   api: {
     getAdminStatus: vi.fn(),
@@ -85,9 +86,9 @@ describe("AdminDashboard", () => {
     expect(api.getAdminStatus).not.toHaveBeenCalled();
   });
 
-  it("includes the navigation menu in the header", async () => {
+  it("includes the left navigation rail", () => {
     render(<AdminDashboard open onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByLabelText("Open menu")).toBeInTheDocument());
+    expect(screen.getByTestId("sidenav")).toBeInTheDocument();
   });
 
   it("fetches + renders metrics, inventory rows, and capability cache entries", async () => {
@@ -235,14 +236,4 @@ describe("AdminDashboard", () => {
     expect(await screen.findByText("Error: flush boom")).toBeInTheDocument();
   });
 
-  it("calls onClose from the close button and the backdrop", async () => {
-    const onClose = vi.fn();
-    const user = userEvent.setup();
-    const { container } = render(<AdminDashboard open onClose={onClose} />);
-    await screen.findByText("SYSTEM STATUS");
-    // backdrop is the first fixed inset-0 div
-    const backdrop = container.querySelector(".fixed.inset-0") as HTMLElement;
-    await user.click(backdrop);
-    expect(onClose).toHaveBeenCalled();
-  });
 });

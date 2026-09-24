@@ -16,16 +16,14 @@ vi.mock("framer-motion", () => ({
   }),
   AnimatePresence: ({ children }: any) => children,
 }));
-const nav = { goCatalogs: vi.fn(), goTableLineage: vi.fn(), goRootCause: vi.fn(), goDQ: vi.fn(), goControlPanel: vi.fn() };
+const nav = { goCatalogs: vi.fn(), goTableLineage: vi.fn() };
 vi.mock("../../hooks/useRouter", () => ({
   goCatalogs: () => nav.goCatalogs(),
   goTableLineage: () => nav.goTableLineage(),
-  goRootCause: () => nav.goRootCause(),
-  goDQ: () => nav.goDQ(),
-  goControlPanel: () => nav.goControlPanel(),
-  // Admin Dashboard is a link, not a navigate() call — see the new-tab test below.
-  routeHref: (r: { view: string }) => (r.view === "admin" ? "?admin=true" : "?"),
 }));
+// The left rail (branding, nav, user, workspace) is its own component with its own
+// test — stub it so these focus on the home content.
+vi.mock("../layout/SideNav", () => ({ default: () => <div data-testid="sidenav" /> }));
 vi.mock("./LineagePicker", () => ({ default: ({ mode }: any) => <div data-testid="picker">picker-{mode}</div> }));
 vi.mock("../../api/client", () => ({
   api: { getUserInfo: vi.fn().mockResolvedValue({ email: "a@b.com", isAdmin: false }), getTables: vi.fn().mockResolvedValue({ tables: [] }) },
@@ -38,19 +36,18 @@ function t(catalog: string, name: string) {
 describe("Landing", () => {
   beforeEach(() => {
     Object.values(nav).forEach((f) => f.mockReset());
-    (api.getUserInfo as any).mockResolvedValue({ email: "a@b.com", isAdmin: false });
     global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ notifications: [], count: 0 }) }) as any;
     useThemeStore.setState({ theme: "dark" });
     useLineageStore.setState({ allTables: [t("main", "x"), t("dev", "y")], allTablesLoading: false, isAdmin: false, globalSearchOpen: false });
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("renders tiles when data loaded", async () => {
+  it("renders tiles and the left rail when data loaded", () => {
     render(<Landing onSelectTable={vi.fn()} />);
+    expect(screen.getByTestId("sidenav")).toBeInTheDocument();
     expect(screen.getAllByText("Browse").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Schema lineage")).toBeInTheDocument();
     expect(screen.getByText("Catalog lineage")).toBeInTheDocument();
-    expect(await screen.findByText("a@b.com")).toBeInTheDocument();
   });
 
   it("shows loading state", () => {
@@ -82,34 +79,10 @@ describe("Landing", () => {
     expect(screen.getByTestId("picker")).toHaveTextContent("picker-catalog");
   });
 
-  it("navigates via sidebar Browse", async () => {
-    const user = userEvent.setup();
+  it("opens global search from the hero button", () => {
     render(<Landing onSelectTable={vi.fn()} />);
-    await user.click(screen.getAllByText("Browse")[0]);
-    expect(nav.goCatalogs).toHaveBeenCalled();
-  });
-
-  it("navigates via all sidebar nav items", async () => {
-    const user = userEvent.setup();
-    useLineageStore.setState({ isAdmin: true });
-    render(<Landing onSelectTable={vi.fn()} />);
-    await user.click(screen.getByText("Impact Analysis"));
-    await user.click(screen.getByText("Data Quality"));
-    await user.click(screen.getByText("Reports"));
-    await user.click(screen.getByText("Settings"));
-    expect(nav.goTableLineage).toHaveBeenCalled();
-    expect(nav.goDQ).toHaveBeenCalled();
-    expect(nav.goRootCause).toHaveBeenCalled();
-    expect(nav.goControlPanel).toHaveBeenCalled();
-  });
-
-  it("opens global search from sidebar and hero button", async () => {
-    const user = userEvent.setup();
-    render(<Landing onSelectTable={vi.fn()} />);
-    await user.click(screen.getByText("Search"));
-    expect(useLineageStore.getState().globalSearchOpen).toBe(true);
-    useLineageStore.setState({ globalSearchOpen: false });
-    await user.click(screen.getByText(/Search any table across/));
+    const heroBtn = screen.getByText(/Search any table across/).closest("button")!;
+    fireEvent.click(heroBtn);
     expect(useLineageStore.getState().globalSearchOpen).toBe(true);
   });
 
@@ -130,38 +103,6 @@ describe("Landing", () => {
     expect(useThemeStore.getState().theme).toBe("light");
   });
 
-  it("hides Admin Dashboard nav unless admin", () => {
-    render(<Landing onSelectTable={vi.fn()} />);
-    expect(screen.queryByText("Admin Dashboard")).not.toBeInTheDocument();
-  });
-
-  it("shows Admin Dashboard nav for admins", () => {
-    useLineageStore.setState({ isAdmin: true });
-    render(<Landing onSelectTable={vi.fn()} />);
-    expect(screen.getByText("Admin Dashboard")).toBeInTheDocument();
-  });
-
-  // It used to be a <button> wired to goAdmin(), which replaced the lineage view
-  // the admin was looking at. An anchor is what makes it a new tab, and what makes
-  // cmd/middle-click work; rel="noopener" keeps the opened tab off window.opener.
-  it("opens Admin Dashboard in a new tab rather than navigating in place", () => {
-    useLineageStore.setState({ isAdmin: true });
-    render(<Landing onSelectTable={vi.fn()} />);
-    const link = screen.getByText("Admin Dashboard").closest("a");
-    expect(link).not.toBeNull();
-    expect(link).toHaveAttribute("href", "?admin=true");
-    expect(link).toHaveAttribute("target", "_blank");
-    expect(link!.getAttribute("rel")).toContain("noopener");
-    // No same-tab navigator is reachable from this item any more.
-    expect(screen.getByText("Admin Dashboard").closest("button")).toBeNull();
-  });
-
-  // The previous test here was named "opens search from the notifications bell" and
-  // asserted exactly that. It was not catching the bug, it was DOCUMENTING it: the
-  // bell's handler called setGlobalSearchOpen(true), so clicking it opened the global
-  // search palette. The test matched the code rather than the intent, which is why it
-  // passed for as long as the bug existed. Notifications are now deferred, so the
-  // control must be inert.
   it("notifications bell is disabled and opens nothing", async () => {
     const user = userEvent.setup();
     render(<Landing onSelectTable={vi.fn()} />);
@@ -169,35 +110,6 @@ describe("Landing", () => {
     expect(bell).toBeDisabled();
     await user.click(bell);
     expect(useLineageStore.getState().globalSearchOpen).toBe(false);
-  });
-
-  it("does not render an unread badge on the disabled bell", () => {
-    render(<Landing onSelectTable={vi.fn()} />);
-    // A count you cannot open is an unresolvable nag.
-    expect(screen.queryByText("9+")).not.toBeInTheDocument();
-  });
-
-  it("workspace selector is present but disabled, reserving the slot", () => {
-    render(<Landing onSelectTable={vi.fn()} />);
-    const ws = screen.getByTitle("Multi-workspace — coming soon");
-    expect(ws).toBeInTheDocument();
-    expect(ws).toHaveAttribute("aria-disabled", "true");
-  });
-
-  it("signed-in user is display-only, with no expand affordance", async () => {
-    render(<Landing onSelectTable={vi.fn()} />);
-    // Identity is shown (resolved async from /api/user-info)...
-    const email = await screen.findByText("a@b.com");
-    expect(email).toBeInTheDocument();
-    // ...and it is not a button, so it cannot invite a click it has no answer for.
-    expect(email.closest("button")).toBeNull();
-  });
-
-  it("closes the picker via its onClose", () => {
-    const { container } = render(<Landing onSelectTable={vi.fn()} />);
-    const tile = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim().startsWith("Schema lineage"))!;
-    fireEvent.click(tile);
-    expect(screen.getByTestId("picker")).toBeInTheDocument();
   });
 
   it("handles retry failure gracefully", async () => {

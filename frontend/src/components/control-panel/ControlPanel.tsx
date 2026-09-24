@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, SlidersHorizontal, RefreshCw, Database, Share2 } from "lucide-react";
 import { useLineageStore } from "../../store/lineageStore";
 import { useFeatureFlagStore } from "../../store/featureFlagStore";
-import HeaderMenu from "../layout/HeaderMenu";
+import SideNav from "../layout/SideNav";
 import {
   getFeatureFlags,
   setFeatureFlag,
@@ -63,56 +63,40 @@ function ControlPanel({ open, onClose }: Props) {
 
   const byModule = (label: string) => flags.filter((f) => f.module_label === label);
 
+  if (!open) {
+    return <AccessRequirementsModal flag={accessModalFlag} onClose={() => setAccessModalFlag(null)} />;
+  }
+
   return (
-    <AnimatePresence>
-      {open && (
-        <>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[9996]"
-            onClick={onClose}
-          />
-          <motion.div
-            initial={{ opacity: 0, scale: 0.96, y: 16 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.96, y: 16 }}
-            transition={{ duration: 0.2 }}
-            className="fixed inset-4 z-[9997] flex items-start justify-center pt-8 pointer-events-none"
+    <div className="h-screen w-screen flex bg-surface overflow-hidden">
+      <SideNav />
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-6 h-[68px] shrink-0 border-b border-violet-500/10">
+          <div className="flex items-center gap-3">
+            <SlidersHorizontal size={16} className="text-violet-400" />
+            <span className="font-semibold text-[15px] text-violet-100 tracking-tight">Control Panel</span>
+            {!isAdmin && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/[0.04] text-slate-500 border border-white/[0.06]">
+                Read-only — admin required to toggle
+              </span>
+            )}
+          </div>
+          <button
+            onClick={refresh}
+            disabled={loading}
+            className="text-violet-400/70 hover:text-violet-300 transition-colors disabled:opacity-40"
+            title="Refresh"
           >
-            <div className="pointer-events-auto w-full max-w-[720px] max-h-[85vh] overflow-y-auto rounded-2xl bg-[#0f0a17]/95 border border-violet-500/20 shadow-[0_0_60px_rgba(139,92,246,0.12)] backdrop-blur-xl">
-              <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-violet-500/10 bg-[#0f0a17]/95 backdrop-blur-xl">
-                <div className="flex items-center gap-3">
-                  <SlidersHorizontal size={16} className="text-violet-400" />
-                  <span className="font-semibold text-[14px] text-violet-100 tracking-tight">Control Panel</span>
-                  {!isAdmin && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/[0.04] text-slate-500 border border-white/[0.06]">
-                      Read-only — admin required to toggle
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={refresh}
-                    disabled={loading}
-                    className="text-violet-400/70 hover:text-violet-300 transition-colors disabled:opacity-40"
-                    title="Refresh"
-                  >
-                    <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
-                  </button>
-                  <HeaderMenu />
-                  <button onClick={onClose} className="text-violet-400/50 hover:text-violet-300 transition-colors" aria-label="Close">
-                    <X size={18} />
-                  </button>
-                </div>
-              </div>
+            <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
+          </button>
+        </div>
 
-              {error && (
-                <div className="px-6 py-3 text-[12px] text-red-400 bg-red-500/5 border-b border-red-500/10">{error}</div>
-              )}
+        {error && (
+          <div className="px-6 py-3 text-[12px] text-red-400 bg-red-500/5 border-b border-red-500/10">{error}</div>
+        )}
 
-              <div className="p-6 space-y-6">
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-[820px] mx-auto p-6 space-y-6">
                 <ModuleSection
                   moduleLabel="Lineage Tracking"
                   flags={byModule("Lineage Tracking")}
@@ -156,13 +140,11 @@ function ControlPanel({ open, onClose }: Props) {
                 {!loading && flags.length === 0 && !error && (
                   <div className="text-center py-8 text-[12px] text-slate-500">No capabilities registered.</div>
                 )}
-              </div>
-            </div>
-          </motion.div>
-        </>
-      )}
+          </div>
+        </div>
+      </div>
       <AccessRequirementsModal flag={accessModalFlag} onClose={() => setAccessModalFlag(null)} />
-    </AnimatePresence>
+    </div>
   );
 }
 

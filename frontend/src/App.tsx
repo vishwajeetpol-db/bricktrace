@@ -20,6 +20,7 @@ import CatalogListView from "./components/browse/CatalogListView";
 import SchemaListView from "./components/browse/SchemaListView";
 import TableListView from "./components/browse/TableListView";
 import PageShell from "./components/browse/PageShell";
+import SideNav from "./components/layout/SideNav";
 import { useLineageStore } from "./store/lineageStore";
 import { api, setLiveMode } from "./api/client";
 import { useRouter, goLineage, goLanding } from "./hooks/useRouter";
@@ -326,10 +327,13 @@ export default function App() {
     return (
       <>
         <ReactFlowProvider>
-          <div className="h-screen w-screen flex flex-col overflow-hidden bg-surface">
-            <Toolbar onGenerate={handleGenerate} />
-            <div className="flex-1 relative">
-              <LineageCanvas />
+          <div className="h-screen w-screen flex overflow-hidden bg-surface">
+            <SideNav initialCollapsed />
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+              <Toolbar onGenerate={handleGenerate} />
+              <div className="flex-1 relative">
+                <LineageCanvas />
+              </div>
             </div>
           </div>
         </ReactFlowProvider>

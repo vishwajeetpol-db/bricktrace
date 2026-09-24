@@ -11,6 +11,7 @@ vi.mock("framer-motion", () => ({
   motion: new Proxy({}, { get: () => (p: any) => <div onClick={p.onClick}>{p.children}</div> }),
   AnimatePresence: ({ children }: any) => children,
 }));
+vi.mock("../layout/SideNav", () => ({ default: () => <div data-testid="sidenav" /> }));
 vi.mock("../../api/controlPanel", () => ({
   getFeatureFlags: vi.fn(),
   setFeatureFlag: vi.fn(),
@@ -51,18 +52,9 @@ describe("ControlPanel", () => {
     expect(screen.getByText(/3 peers/)).toBeInTheDocument();
   });
 
-  it("includes the navigation menu in the header", () => {
+  it("includes the left navigation rail", () => {
     render(<ControlPanel open onClose={vi.fn()} />);
-    expect(screen.getByLabelText("Open menu")).toBeInTheDocument();
-  });
-
-  it("closes via the close button", async () => {
-    const onClose = vi.fn();
-    const user = userEvent.setup();
-    render(<ControlPanel open onClose={onClose} />);
-    await screen.findByText("Flag a");
-    await user.click(screen.getByLabelText("Close"));
-    expect(onClose).toHaveBeenCalled();
+    expect(screen.getByTestId("sidenav")).toBeInTheDocument();
   });
 
   it("toggles a flag optimistically and confirms via api", async () => {

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, Activity, Database, Clock, Cpu, HardDrive, Zap, Users, Layers, AlertTriangle, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import type { AdminStatus, CapabilityCacheEntry } from "../api/client";
-import HeaderMenu from "./layout/HeaderMenu";
+import SideNav from "./layout/SideNav";
 
 const CAP_TAB_LABEL: Record<string, string> = {
   impact: "Impact",
@@ -89,27 +89,14 @@ function AdminDashboard({ open, onClose }: Props) {
     return () => clearInterval(interval);
   }, [open]);
 
+  if (!open) return null;
+
   return (
-    <AnimatePresence>
-      {open && (
-        <>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[9998]"
-            onClick={onClose}
-          />
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 20 }}
-            transition={{ duration: 0.2 }}
-            className="fixed inset-4 z-[9999] flex items-start justify-center pt-8 pointer-events-none"
-          >
-            <div className="pointer-events-auto w-full max-w-[900px] max-h-[85vh] overflow-y-auto rounded-2xl bg-[#0a0f0a]/95 border border-emerald-500/20 shadow-[0_0_60px_rgba(16,185,129,0.1)] backdrop-blur-xl">
+    <div className="h-screen w-screen flex bg-surface overflow-hidden">
+      <SideNav />
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
               {/* Header */}
-              <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-emerald-500/10 bg-[#0a0f0a]/95 backdrop-blur-xl">
+              <div className="flex items-center justify-between px-6 h-[68px] shrink-0 border-b border-emerald-500/10">
                 <div className="flex items-center gap-3">
                   <div className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px] shadow-emerald-400/60 animate-pulse" />
                   <span className="font-mono text-[14px] text-emerald-400 font-bold tracking-wider">SYSTEM STATUS</span>
@@ -134,13 +121,10 @@ function AdminDashboard({ open, onClose }: Props) {
                     <Trash2 size={11} /> Wipe lineage
                   </button>
                   {loading && <div className="w-3 h-3 border border-emerald-500/40 border-t-emerald-400 rounded-full animate-spin" />}
-                  <HeaderMenu />
-                  <button onClick={onClose} className="text-emerald-500/40 hover:text-emerald-400 transition-colors">
-                    <X size={18} />
-                  </button>
                 </div>
               </div>
 
+        <div className="flex-1 overflow-y-auto">
               {error && (
                 <div className="px-6 py-3 text-[12px] font-mono text-red-400 bg-red-500/5 border-b border-red-500/10">
                   ERROR: {error}
@@ -368,11 +352,9 @@ function AdminDashboard({ open, onClose }: Props) {
                 <span className="font-mono text-[9px] text-emerald-500/30">Auto-refresh: 10s</span>
                 <span className="font-mono text-[9px] text-emerald-500/30">BrickTrace v{status?.system?.python_version || "?"}</span>
               </div>
-            </div>
-          </motion.div>
-        </>
-      )}
-    </AnimatePresence>
+        </div>
+      </div>
+    </div>
   );
 }
 

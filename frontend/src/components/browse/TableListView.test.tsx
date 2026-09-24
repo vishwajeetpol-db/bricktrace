@@ -9,6 +9,7 @@ vi.mock("framer-motion", () => ({
   motion: new Proxy({}, { get: () => (p: any) => <button onClick={p.onClick}>{p.children}</button> }),
   AnimatePresence: ({ children }: any) => children,
 }));
+vi.mock("../layout/SideNav", () => ({ default: () => null }));
 vi.mock("../../hooks/useRouter", () => ({
   goLanding: vi.fn(), goCatalogs: vi.fn(), goControlPanel: vi.fn(), goDQ: vi.fn(),
   goGlossary: vi.fn(), goNotifications: vi.fn(), goExport: vi.fn(), goRootCause: vi.fn(),

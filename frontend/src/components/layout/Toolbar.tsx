@@ -4,7 +4,6 @@ import { Search, ChevronDown, Columns3, Zap, Info, Lock, AlertTriangle, ArrowLef
 import { useLineageStore } from "../../store/lineageStore";
 import { api, setLiveMode } from "../../api/client";
 import { goLanding, goSchemas, goCatalogs } from "../../hooks/useRouter";
-import HeaderMenu from "./HeaderMenu";
 import ThemeToggle from "../ui/ThemeToggle";
 
 const VIEW_LABELS = { pipeline: "Pipelines", table: "Tables", full: "Full" } as const;
@@ -131,25 +130,7 @@ function Toolbar({ onGenerate }: Props) {
         border-b border-white/[0.04]
       "
     >
-      {/* Logo — clickable, returns to home */}
-      <button
-        onClick={goLanding}
-        className="flex items-center gap-2.5 mr-1 flex-shrink-0 hover:opacity-90 transition-opacity"
-        title="Back to home"
-        aria-label="Back to home"
-      >
-        <span className="w-9 h-9 rounded-lg overflow-hidden inline-flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(255,85,32,0.45)]">
-          <img src="/bricktrace-logo.png" alt="" className="w-full h-full object-contain" />
-        </span>
-        <div className="text-left">
-          <div className="font-bold text-[14px] tracking-tight leading-none">
-            <span className="text-slate-100">Brick</span><span className="text-[#FF4520]">Trace</span>
-          </div>
-          <div className="text-[9px] text-slate-600 tracking-wider uppercase mt-0.5">
-            Unity Catalog
-          </div>
-        </div>
-      </button>
+      {/* Branding + primary nav now live in the shared left rail (SideNav). */}
 
       {/* Middle controls. NOTE: must NOT set overflow here — overflow-x:auto
           forces overflow-y to compute as auto, which clips the dropdown/popover
@@ -424,9 +405,8 @@ function Toolbar({ onGenerate }: Props) {
         <Search size={14} className="text-slate-500" />
       </button>
 
-      {/* Theme toggle + shared menu */}
+      {/* Theme toggle (nav lives in the shared left rail) */}
       <ThemeToggle />
-      <HeaderMenu />
       </div>{/* end pinned right actions */}
     </motion.header>
     {/* Cache status banner */}
