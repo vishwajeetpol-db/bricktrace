@@ -11,6 +11,7 @@ import {
 import { RingGauge, TrendLine, DimensionDonut, scoreColor, gradeColor } from "./dq/DQCharts";
 import { RuleEditor, RuleSuggestions } from "./dq/RuleEditor";
 import { dimensionForRuleType, DQ_DIMENSIONS } from "../lib/dqDimensions";
+import { buildFindings } from "../lib/dqFindings";
 
 interface Props {
   tableFqn?: string;
@@ -129,6 +130,7 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
   );
 
   const profileColumnNames = useMemo(() => (profile?.columns ?? []).map((c) => c.name), [profile]);
+  const findings = useMemo(() => buildFindings(profile?.columns ?? []), [profile]);
   const profileRowCount = useMemo(() => {
     const fromLive = profile?.columns?.find((c) => c.total_rows != null)?.total_rows;
     if (fromLive != null) return fromLive;
@@ -319,6 +321,31 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
               />
             </div>
           </div>
+
+          {/* Findings — the real data issues, surfaced from the live profile */}
+          {findings.length > 0 && (
+            <div className="p-4 bg-amber-500/[0.06] rounded-xl border border-amber-500/20">
+              <div className="flex items-center gap-2 mb-2.5">
+                <span className="text-amber-400 text-[13px]">⚠</span>
+                <h3 className="text-[13px] font-semibold text-amber-300">
+                  {findings.length} data {findings.length === 1 ? "finding" : "findings"}
+                </h3>
+                <span className="text-[11px] text-slate-500">from the live column profile</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {findings.map((f) => (
+                  <div key={`${f.kind}:${f.column}`} className="flex items-center gap-2 text-[12px]">
+                    <span
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ background: f.weight >= 5 || f.kind === "constant" ? "#f87171" : "#fbbf24" }}
+                    />
+                    <span className="text-slate-200 font-medium truncate">{f.column}</span>
+                    <span className="text-slate-500 truncate">{f.detail}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Trend */}
           <Section title="Quality trend" hint={trends ? `${trends.data_points.length} run(s)` : ""}>

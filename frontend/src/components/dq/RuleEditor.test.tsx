@@ -62,6 +62,25 @@ describe("RuleSuggestions", () => {
     expect(screen.getAllByText("UNIQUE").length).toBe(1);
   });
 
+  it("suggests a WARN NOT_NULL for a small nonzero null rate, none above the threshold", () => {
+    render(
+      <RuleSuggestions
+        tableFqn="main.s.t"
+        columns={[
+          { name: "amount", total_rows: 100, distinct_count: 50, null_count: 5, null_pct: 5 },
+          { name: "note", total_rows: 100, distinct_count: 30, null_count: 20, null_pct: 20 },
+        ]}
+        existingRules={[]}
+        onSaved={() => {}}
+      />,
+    );
+    expect(screen.getByText("on amount")).toBeInTheDocument();
+    expect(screen.getByText(/5.0% null — monitor/)).toBeInTheDocument();
+    expect(screen.getByText("warn")).toBeInTheDocument();
+    // 20% null is above the monitor threshold → not suggested as a rule
+    expect(screen.queryByText("on note")).not.toBeInTheDocument();
+  });
+
   it("hides suggestions already covered by existing rules", () => {
     render(
       <RuleSuggestions

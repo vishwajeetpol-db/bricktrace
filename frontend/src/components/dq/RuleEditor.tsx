@@ -158,6 +158,7 @@ export function RuleEditor({
 interface Suggestion {
   column: string;
   rule_type: "NOT_NULL" | "UNIQUE";
+  severity: "ERROR" | "WARN";
   reason: string;
 }
 
@@ -188,11 +189,21 @@ export function RuleSuggestions({
     const out: Suggestion[] = [];
     for (const c of columns) {
       if (c.total_rows == null) continue; // needs a live profile
-      if ((c.null_pct === 0 || c.null_count === 0) && !hasExisting(c.name, "NOT_NULL")) {
-        out.push({ column: c.name, rule_type: "NOT_NULL", reason: "0% null in the sample" });
+      const nullPct = c.null_pct;
+      if ((nullPct === 0 || c.null_count === 0) && !hasExisting(c.name, "NOT_NULL")) {
+        // Safe to enforce — no nulls today; the rule catches a future regression.
+        out.push({ column: c.name, rule_type: "NOT_NULL", severity: "ERROR", reason: "0% null — enforce" });
+      } else if (nullPct != null && nullPct > 0 && nullPct <= 10 && !hasExisting(c.name, "NOT_NULL")) {
+        // Small, nonzero null rate — worth watching, but not a hard failure yet.
+        out.push({
+          column: c.name,
+          rule_type: "NOT_NULL",
+          severity: "WARN",
+          reason: `${nullPct.toFixed(nullPct < 1 ? 2 : 1)}% null — monitor`,
+        });
       }
       if (c.distinct_count != null && c.total_rows > 0 && c.distinct_count === c.total_rows && !hasExisting(c.name, "UNIQUE")) {
-        out.push({ column: c.name, rule_type: "UNIQUE", reason: "every value distinct" });
+        out.push({ column: c.name, rule_type: "UNIQUE", severity: "ERROR", reason: "every value distinct" });
       }
     }
     return out;
@@ -213,7 +224,7 @@ export function RuleSuggestions({
           column_name: s.column,
           rule_type: s.rule_type,
           expression: "",
-          severity: "ERROR",
+          severity: s.severity,
         });
       }
       setPicked({});
@@ -261,6 +272,9 @@ export function RuleSuggestions({
           />
           <span className="w-2 h-2 rounded-full" style={{ background: dimensionForRuleType(s.rule_type).color }} />
           <span className="text-slate-200">{s.rule_type}</span>
+          {s.severity === "WARN" && (
+            <span className="text-[9px] uppercase px-1.5 py-0.5 rounded bg-amber-400/10 text-amber-400">warn</span>
+          )}
           <span className="text-slate-500">on {s.column}</span>
           <span className="ml-auto text-slate-600">{s.reason}</span>
         </label>

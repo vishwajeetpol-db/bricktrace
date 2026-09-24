@@ -48,8 +48,8 @@ const trends = {
 const profile = {
   table_full_name: "main.s.t",
   row_count_approx: "12345",
-  profile_source: "delta_stats",
-  columns: [{ name: "email", distinct_count: 100, null_pct: 0.5, min: null, max: null }],
+  profile_source: "live_query",
+  columns: [{ name: "email", total_rows: 1000, distinct_count: 100, null_count: 5, null_pct: 0.5, min: null, max: null }],
 };
 const propagation = {
   table_fqn: "main.s.t",
@@ -121,6 +121,9 @@ describe("DQMetricsPanel", () => {
     expect(screen.getByText(/improving/i)).toBeInTheDocument();
     // upstream coverage warning
     expect(screen.getByText(/upstream table\(s\) have no DQ rules/i)).toBeInTheDocument();
+    // findings callout surfaces the null column from the live profile
+    expect(await screen.findByText(/1 data finding/i)).toBeInTheDocument();
+    expect(screen.getByText(/0.50% null/)).toBeInTheDocument();
   });
 
   it("does not crash when the table has no rules (short metrics response)", async () => {
