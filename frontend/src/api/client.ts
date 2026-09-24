@@ -102,6 +102,81 @@ export interface TableSearchItem {
   table_type: string;
 }
 
+// ---- Data Quality ---------------------------------------------------------
+export interface DQMetric {
+  rule_id: string;
+  column: string;
+  rule_type: string;
+  pass_rate: number | null;
+  total_rows?: number;
+  passing_rows?: number;
+  failing_rows?: number;
+  status: string;
+  severity?: string;
+  error?: string;
+}
+export interface DQMetricsResult {
+  table_fqn: string;
+  metrics: DQMetric[];
+  quality_score: number | null;
+  quality_grade: string | null;
+  rules_evaluated: number;
+  rules_total: number;
+  rules_unevaluated?: number;
+  coverage_complete?: boolean;
+  sample_size: number;
+  note?: string;
+}
+export interface DQRule {
+  rule_id?: string;
+  table_fqn?: string;
+  column_name: string;
+  rule_type: string;
+  expression?: string;
+  severity?: string;
+  notes?: string;
+}
+export interface DQTrendPoint {
+  run_id: string;
+  quality_score: number | null;
+  rules_evaluated: number;
+  rules_passed: number;
+  rules_failed: number;
+  evaluated_at: string;
+}
+export interface DQTrends {
+  table_fqn: string;
+  trend: "improving" | "stable" | "degrading";
+  data_points: DQTrendPoint[];
+}
+export interface DQProfileColumn {
+  name: string;
+  distinct_count?: number | null;
+  null_count?: number | null;
+  null_pct?: number | null;
+  min?: string | number | null;
+  max?: string | number | null;
+  avg_col_len?: number | null;
+  max_col_len?: number | null;
+}
+export interface DQProfile {
+  table_full_name: string;
+  row_count_approx: string | null;
+  profile_source: string;
+  columns: DQProfileColumn[];
+}
+export interface DQPropagationUpstream {
+  upstream_table: string;
+  has_dq_rules: boolean;
+  rule_count: number;
+}
+export interface DQPropagation {
+  table_fqn: string;
+  upstream_quality: DQPropagationUpstream[];
+  upstream_count: number;
+  covered_count: number;
+}
+
 export interface AdminStatus {
   system: { uptime_sec: number; uptime_human: string; python_version: string; pid: number };
   memory: { rss_mb: number; vms_mb: number; rss_percent: number };
@@ -871,5 +946,46 @@ export const api = {
     const res = await fetch(`${BASE}/admin/capability-cache/evict?${q.toString()}`, { method: "POST" });
     if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
     return res.json() as Promise<{ status: string; scope: string; evicted?: number }>;
+  },
+
+  // ---- Data Quality ------------------------------------------------------
+  /** Live per-rule pass/fail + quality score. Admin-only (executes rule SQL). */
+  getDQMetrics: async (tableFqn: string, sampleSize = 10000) => {
+    const res = await fetch(
+      `${BASE}/dq-rules/metrics?table_fqn=${encodeURIComponent(tableFqn)}&sample_size=${sampleSize}`,
+    );
+    if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+    return res.json() as Promise<DQMetricsResult>;
+  },
+  /** List authored DQ rules, optionally for one table (else the whole portfolio). */
+  listDQRules: (tableFqn?: string) =>
+    fetchJson<{ rules: DQRule[] }>(
+      `${BASE}/dq-rules${tableFqn ? `?table_fqn=${encodeURIComponent(tableFqn)}` : ""}`,
+    ),
+  /** Recorded quality-score history for a table (for the trend chart). */
+  getDQTrends: (tableFqn: string, days = 30) =>
+    fetchJson<DQTrends>(`${BASE}/dq-rules/trends?table_fqn=${encodeURIComponent(tableFqn)}&days=${days}`),
+  /** Column profiling overlay (null %, distinct count, stats). Non-live = no admin needed. */
+  getColumnProfile: (catalog: string, schema: string, table: string) =>
+    fetchJson<DQProfile>(
+      `${BASE}/diagnostics/profile?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`,
+    ),
+  /** Upstream DQ coverage across lineage. */
+  getDQPropagation: (catalog: string, schema: string, table: string) =>
+    fetchJson<DQPropagation>(
+      `${BASE}/dq-rules/propagation?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`,
+    ),
+  /** Persist a metrics run so it shows up in the trend the next time. Admin-only. */
+  recordDQMetrics: async (body: {
+    table_fqn: string; quality_score: number;
+    rules_evaluated: number; rules_passed: number; rules_failed: number;
+  }) => {
+    const res = await fetch(`${BASE}/dq-rules/record-metrics`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+    return res.json() as Promise<{ status: string; run_id: string }>;
   },
 };
