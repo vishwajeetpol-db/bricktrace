@@ -138,6 +138,17 @@ class TestDQRulesPost:
             assert "rule_id" in data
             assert data["status"] == "upserted"
 
+    def test_rule_id_distinguishes_rule_type(self, admin_client):
+        """NOT_NULL and UNIQUE on the same column (both empty expression) must get
+        DISTINCT ids — rule_type is part of the identity, else one overwrites the other."""
+        with patch("backend.routes.dq._execute_sql") as mock_sql:
+            mock_sql.return_value = []
+            base = {"table_fqn": "main.default.orders", "column_name": "id", "expression": "", "severity": "ERROR"}
+            r1 = admin_client.post("/api/dq-rules", json={**base, "rule_type": "NOT_NULL"})
+            r2 = admin_client.post("/api/dq-rules", json={**base, "rule_type": "UNIQUE"})
+            assert r1.status_code == 200 and r2.status_code == 200
+            assert r1.json()["rule_id"] != r2.json()["rule_id"]
+
     def test_invalid_table_fqn_returns_400(self, admin_client):
         """Invalid table_fqn format rejected."""
         with patch("backend.routes.dq._execute_sql") as mock_sql:
