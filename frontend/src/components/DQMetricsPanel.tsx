@@ -73,13 +73,14 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
         const m = mRes.value;
         if (m.quality_score != null) {
           const passed = m.metrics.filter((x) => x.status === "pass").length;
+          const evaluated = m.rules_evaluated ?? 0;
           api
             .recordDQMetrics({
               table_fqn: fqn,
               quality_score: m.quality_score,
-              rules_evaluated: m.rules_evaluated,
+              rules_evaluated: evaluated,
               rules_passed: passed,
-              rules_failed: m.rules_evaluated - passed,
+              rules_failed: evaluated - passed,
             })
             .catch(() => {});
         }
@@ -232,14 +233,20 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
                     </span>
                   ) : (
                     <span className="text-[12px] text-slate-500">
-                      {metrics ? "Partial coverage" : isAdmin ? "Run to score" : "Admin-only"}
+                      {metrics
+                        ? metrics.metrics.length === 0
+                          ? "No rules yet"
+                          : "Partial coverage"
+                        : isAdmin
+                        ? "Run to score"
+                        : "Admin-only"}
                     </span>
                   )}
                   {trends && trends.data_points.length >= 2 && (
                     <TrendBadge dir={trends.trend} />
                   )}
                 </div>
-                {metrics && (
+                {metrics && metrics.sample_size != null && (
                   <p className="text-[11px] text-slate-500 mt-1.5">
                     {metrics.rules_evaluated}/{metrics.rules_total} rules · {metrics.sample_size.toLocaleString()} rows
                   </p>
@@ -252,7 +259,7 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
               <Kpi
                 label="Passing"
                 value={metrics ? `${metrics.metrics.filter((m) => m.status === "pass").length}` : "—"}
-                sub={metrics ? `of ${metrics.rules_evaluated} run` : "run to see"}
+                sub={metrics ? `of ${metrics.rules_evaluated ?? 0} run` : "run to see"}
                 tone="good"
               />
               <Kpi
@@ -264,8 +271,8 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
               <Kpi
                 label="Coverage"
                 value={
-                  metrics && metrics.rules_total > 0
-                    ? `${Math.round((metrics.rules_evaluated / metrics.rules_total) * 100)}%`
+                  metrics && (metrics.rules_total ?? 0) > 0
+                    ? `${Math.round(((metrics.rules_evaluated ?? 0) / (metrics.rules_total as number)) * 100)}%`
                     : "—"
                 }
                 sub={metrics?.coverage_complete === false ? "incomplete" : "of rules"}

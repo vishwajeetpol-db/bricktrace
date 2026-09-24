@@ -123,6 +123,21 @@ describe("DQMetricsPanel", () => {
     expect(screen.getByText(/upstream table\(s\) have no DQ rules/i)).toBeInTheDocument();
   });
 
+  it("does not crash when the table has no rules (short metrics response)", async () => {
+    // Backend's no-rules branch omits sample_size / rules_evaluated / rules_total.
+    global.fetch = routeFetch([
+      ["/dq-rules/metrics", { table_fqn: "main.s.t", metrics: [], quality_score: null, note: "No DQ rules defined" }],
+      ["/dq-rules/trends", { table_fqn: "main.s.t", trend: "stable", data_points: [] }],
+      ["/dq-rules/propagation", { table_fqn: "main.s.t", upstream_quality: [], upstream_count: 0, covered_count: 0 }],
+      ["/diagnostics/profile", { table_full_name: "main.s.t", row_count_approx: null, profile_source: "none", columns: [] }],
+      ["/dq-rules/record-metrics", { status: "ok" }],
+      ["/dq-rules", { rules: [] }],
+    ]) as any;
+    render(<DQMetricsPanel tableFqn="main.s.t" />);
+    expect(await screen.findByText(/No rules yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/No DQ rules defined for this table yet/i)).toBeInTheDocument();
+  });
+
   it("skips live scoring for non-admins but still shows rules & profile", async () => {
     useLineageStore.setState({ isAdmin: false });
     global.fetch = adminRoutes() as any;

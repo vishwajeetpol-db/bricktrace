@@ -119,12 +119,13 @@ export interface DQMetricsResult {
   table_fqn: string;
   metrics: DQMetric[];
   quality_score: number | null;
-  quality_grade: string | null;
-  rules_evaluated: number;
-  rules_total: number;
+  quality_grade?: string | null;
+  // Omitted by the backend's "no rules defined" short response — treat as optional.
+  rules_evaluated?: number;
+  rules_total?: number;
   rules_unevaluated?: number;
   coverage_complete?: boolean;
-  sample_size: number;
+  sample_size?: number;
   note?: string;
 }
 export interface DQRule {
