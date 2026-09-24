@@ -296,6 +296,7 @@ class TestCrossWorkspacePhase2:
         with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999"}]), \
              patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
              patch("backend.feature_flags.get_flag_state", return_value=True), \
+             patch("backend.lineage_service.ENFORCE_USER_IDENTITY", True), \
              patch("backend.federated_workspaces.get_peer", return_value={"workspace_id": "999"}), \
              patch("backend.federated_workspaces.user_can_access_target_table", return_value=True), \
              patch("backend.routes.lineage.analyze_producer",
@@ -309,11 +310,26 @@ class TestCrossWorkspacePhase2:
         with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999"}]), \
              patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
              patch("backend.feature_flags.get_flag_state", return_value=True), \
+             patch("backend.lineage_service.ENFORCE_USER_IDENTITY", True), \
              patch("backend.federated_workspaces.get_peer", return_value={"workspace_id": "999"}), \
              patch("backend.federated_workspaces.user_can_access_target_table", return_value=False), \
              patch("backend.routes.lineage.analyze_producer") as mock_analyze:
             resp = app_client.post("/api/analyze-producer", json=self._JOB)
         assert resp.status_code == 403
+        mock_analyze.assert_not_called()
+
+    def test_denied_when_identity_enforcement_off(self, app_client):
+        # The per-user gate can't run without ENFORCE_USER_IDENTITY, so the whole
+        # cross-workspace fetch is refused (clear 409, not a misleading 403).
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
+             patch("backend.feature_flags.get_flag_state", return_value=True), \
+             patch("backend.lineage_service.ENFORCE_USER_IDENTITY", False), \
+             patch("backend.federated_workspaces.get_peer", return_value={"workspace_id": "999"}), \
+             patch("backend.routes.lineage.analyze_producer") as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 409
+        assert "ENFORCE_USER_IDENTITY" in resp.json()["detail"]
         mock_analyze.assert_not_called()
 
     def test_flag_on_but_peer_unregistered_still_409(self, app_client):

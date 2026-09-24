@@ -156,6 +156,20 @@ def _resolve_fetch_workspace(producer_ws: Optional[str], entity_type: str, entit
     )
     if not get_flag_state(FLAG) or not get_peer(producer_ws):
         raise honest_409
+    # The per-user entitlement gate only works when reads run as the user. Without
+    # ENFORCE_USER_IDENTITY the check would run as the app SP and pass for everyone,
+    # so cross-workspace fetch is unavailable — say so clearly (409, not a 403 that
+    # implies the user personally lacks access).
+    from backend.lineage_service import ENFORCE_USER_IDENTITY
+    if not ENFORCE_USER_IDENTITY:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cross-workspace source fetch requires user-identity enforcement "
+                "(ENFORCE_USER_IDENTITY) so access can be checked per user; it is "
+                "currently off, so the fetch is disabled."
+            ),
+        )
     if not user_can_access_target_table(target_table):
         raise HTTPException(
             status_code=403,
