@@ -43,9 +43,11 @@ describe("SideNav", () => {
   it("renders all primary + secondary destinations", () => {
     render(<SideNav />);
     ["Home", "Lineage Explorer", "Impact Analysis", "Data Quality", "Reports",
-     "Business Glossary", "Notifications", "OpenLineage Export", "BI Consumers", "Streaming Topology", "Settings"]
+     "Business Glossary", "OpenLineage Export", "BI Consumers", "Streaming Topology", "Settings"]
       .forEach((label) => expect(screen.getByText(label)).toBeInTheDocument());
     expect(screen.queryByText("Browse")).not.toBeInTheDocument();
+    // Notifications moved to the top-right bell — not a rail item anymore.
+    expect(screen.queryByText("Notifications")).not.toBeInTheDocument();
   });
 
   it("navigates when an item is clicked", async () => {

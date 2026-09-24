@@ -10,7 +10,7 @@ import { api, setLiveMode } from "../../api/client";
 import { goLanding, goTableLineage } from "../../hooks/useRouter";
 import CatalogTreePanel from "./CatalogTreePanel";
 import DraggablePanel from "./DraggablePanel";
-import ThemeToggle from "../ui/ThemeToggle";
+import HeaderActions from "../layout/HeaderActions";
 import ImpactPanel from "./ImpactPanel";
 import GovernancePanel from "./GovernancePanel";
 import AccessPanel from "./AccessPanel";
@@ -203,7 +203,7 @@ export default function TableLineageWorkspace({ initialTable }: { initialTable?:
         <span className="text-[13px] font-semibold text-slate-100">Table Lineage</span>
         {selected && <span className="font-mono text-[11px] text-slate-500 truncate ml-1">· {selected}</span>}
         {loading && <Loader2 size={13} className="animate-spin text-accent ml-1" />}
-        <div className="ml-auto"><ThemeToggle /></div>
+        <div className="ml-auto"><HeaderActions /></div>
       </div>
 
       {/* Body: left tree + right (summary bar over graph) */}

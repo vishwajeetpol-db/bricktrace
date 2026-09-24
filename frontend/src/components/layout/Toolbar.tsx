@@ -4,7 +4,7 @@ import { Search, ChevronDown, Columns3, Zap, Info, Lock, AlertTriangle, ArrowLef
 import { useLineageStore } from "../../store/lineageStore";
 import { api, setLiveMode } from "../../api/client";
 import { goLanding, goSchemas, goCatalogs } from "../../hooks/useRouter";
-import ThemeToggle from "../ui/ThemeToggle";
+import HeaderActions from "./HeaderActions";
 
 const VIEW_LABELS = { pipeline: "Pipelines", table: "Tables", full: "Full" } as const;
 
@@ -405,8 +405,8 @@ function Toolbar({ onGenerate }: Props) {
         <Search size={14} className="text-slate-500" />
       </button>
 
-      {/* Theme toggle (nav lives in the shared left rail) */}
-      <ThemeToggle />
+      {/* Notifications / help / theme (nav lives in the shared left rail) */}
+      <HeaderActions />
       </div>{/* end pinned right actions */}
     </motion.header>
     {/* Cache status banner */}

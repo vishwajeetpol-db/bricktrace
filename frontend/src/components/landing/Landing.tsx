@@ -11,6 +11,7 @@ import { useThemeStore } from "../../store/themeStore";
 import { goCatalogs, goTableLineage } from "../../hooks/useRouter";
 import LineagePicker from "./LineagePicker";
 import SideNav from "../layout/SideNav";
+import HeaderActions from "../layout/HeaderActions";
 
 interface Props {
   onSelectTable: (fqdn: string) => void;
@@ -112,20 +113,8 @@ function Landing({ onSelectTable }: Props) {
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(99,102,241,0.05)_0%,transparent_55%)] pointer-events-none" />
 
         {/* Top-right bar */}
-        <div className="flex items-center justify-end gap-3 px-6 h-[68px] shrink-0 relative z-10">
-          {/* DEFERRED — see "Known gaps" in CHANGELOG.md. Notifications view unfinished. */}
-          <button
-            disabled
-            aria-disabled="true"
-            className="relative text-slate-600 cursor-not-allowed"
-            title="Notifications — coming soon">
-            <Bell size={19} />
-          </button>
-          <button className="text-slate-400 hover:text-slate-200 transition-colors" title="Help"><HelpCircle size={19} /></button>
-          <button onClick={toggleTheme} className="text-slate-400 hover:text-slate-200 transition-colors"
-            title={theme === "dark" ? "Light mode" : "Dark mode"}>
-            {theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
-          </button>
+        <div className="flex items-center justify-end px-6 h-[68px] shrink-0 relative z-10">
+          <HeaderActions />
         </div>
 
         {/* Content */}

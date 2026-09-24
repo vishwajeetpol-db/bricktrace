@@ -4,6 +4,7 @@ import { X, SlidersHorizontal, RefreshCw, Database, Share2 } from "lucide-react"
 import { useLineageStore } from "../../store/lineageStore";
 import { useFeatureFlagStore } from "../../store/featureFlagStore";
 import SideNav from "../layout/SideNav";
+import HeaderActions from "../layout/HeaderActions";
 import {
   getFeatureFlags,
   setFeatureFlag,
@@ -81,14 +82,17 @@ function ControlPanel({ open, onClose }: Props) {
               </span>
             )}
           </div>
-          <button
-            onClick={refresh}
-            disabled={loading}
-            className="text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-40"
-            title="Refresh"
-          >
-            <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
-          </button>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={refresh}
+              disabled={loading}
+              className="text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-40"
+              title="Refresh"
+            >
+              <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
+            </button>
+            <HeaderActions />
+          </div>
         </div>
 
         {error && (

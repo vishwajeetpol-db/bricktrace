@@ -24,6 +24,7 @@ vi.mock("../../hooks/useRouter", () => ({
 // The left rail (branding, nav, user, workspace) is its own component with its own
 // test — stub it so these focus on the home content.
 vi.mock("../layout/SideNav", () => ({ default: () => <div data-testid="sidenav" /> }));
+vi.mock("../layout/HeaderActions", () => ({ default: () => <div data-testid="header-actions" /> }));
 vi.mock("./LineagePicker", () => ({ default: ({ mode }: any) => <div data-testid="picker">picker-{mode}</div> }));
 vi.mock("../../api/client", () => ({
   api: { getUserInfo: vi.fn().mockResolvedValue({ email: "a@b.com", isAdmin: false }), getTables: vi.fn().mockResolvedValue({ tables: [] }) },
@@ -96,21 +97,8 @@ describe("Landing", () => {
     expect(nav.goCatalogs).toHaveBeenCalled();
   });
 
-  it("toggles theme", async () => {
-    const user = userEvent.setup();
-    render(<Landing onSelectTable={vi.fn()} />);
-    await user.click(screen.getByTitle("Light mode"));
-    expect(useThemeStore.getState().theme).toBe("light");
-  });
-
-  it("notifications bell is disabled and opens nothing", async () => {
-    const user = userEvent.setup();
-    render(<Landing onSelectTable={vi.fn()} />);
-    const bell = screen.getByTitle("Notifications — coming soon");
-    expect(bell).toBeDisabled();
-    await user.click(bell);
-    expect(useLineageStore.getState().globalSearchOpen).toBe(false);
-  });
+  // Theme toggle + notifications bell now live in the shared HeaderActions cluster
+  // (stubbed here) — see HeaderActions.test.tsx.
 
   it("handles retry failure gracefully", async () => {
     (api.getTables as any).mockRejectedValue(new Error("nope"));

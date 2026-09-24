@@ -4,6 +4,7 @@ import { X, Activity, Database, Clock, Cpu, HardDrive, Zap, Users, Layers, Alert
 import { api } from "../api/client";
 import type { AdminStatus, CapabilityCacheEntry } from "../api/client";
 import SideNav from "./layout/SideNav";
+import HeaderActions from "./layout/HeaderActions";
 
 const CAP_TAB_LABEL: Record<string, string> = {
   impact: "Impact",
@@ -121,6 +122,7 @@ function AdminDashboard({ open, onClose }: Props) {
                     <Trash2 size={11} /> Wipe lineage
                   </button>
                   {loading && <div className="w-3 h-3 border border-emerald-500/40 border-t-emerald-400 rounded-full animate-spin" />}
+                  <HeaderActions />
                 </div>
               </div>
 

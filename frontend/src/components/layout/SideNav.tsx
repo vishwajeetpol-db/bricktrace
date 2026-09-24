@@ -35,7 +35,6 @@ const PRIMARY: NavItem[] = [
 ];
 const SECONDARY: NavItem[] = [
   { label: "Business Glossary", icon: BookOpen, action: goGlossary, views: ["glossary"] },
-  { label: "Notifications", icon: Bell, action: goNotifications, views: ["notifications"] },
   { label: "OpenLineage Export", icon: Download, action: goExport, views: ["export"] },
   { label: "BI Consumers", icon: Monitor, action: goBiConsumers, views: ["biConsumers"] },
   { label: "Streaming Topology", icon: Radio, action: goStreaming, views: ["streaming"] },
