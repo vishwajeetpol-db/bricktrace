@@ -21,13 +21,13 @@ describe("RootCauseWizard", () => {
 
   it("renders the input form", () => {
     render(<RootCauseWizard />);
-    expect(screen.getByText("Root Cause Analysis")).toBeInTheDocument();
-    expect(screen.getByText("Analyze Root Cause")).toBeInTheDocument();
+    expect(screen.getByText(/Trace a data-quality issue/)).toBeInTheDocument();
+    expect(screen.getByText("Analyze root cause")).toBeInTheDocument();
   });
 
   it("disables analyze until required fields present", () => {
     render(<RootCauseWizard />);
-    expect(screen.getByText("Analyze Root Cause")).toBeDisabled();
+    expect(screen.getByText("Analyze root cause")).toBeDisabled();
   });
 
   it("enables analyze after filling every field", async () => {
@@ -35,9 +35,9 @@ describe("RootCauseWizard", () => {
     render(<RootCauseWizard />);
     await user.type(screen.getByPlaceholderText("my_catalog"), "c");
     await user.type(screen.getByPlaceholderText("my_schema"), "s");
-    await user.type(screen.getByPlaceholderText("affected_table"), "t");
+    await user.type(screen.getByPlaceholderText("my_table"), "t");
     await user.type(screen.getByPlaceholderText("affected_column"), "col");
-    expect(screen.getByText("Analyze Root Cause")).not.toBeDisabled();
+    expect(screen.getByText("Analyze root cause")).not.toBeDisabled();
   });
 
   it("renders low and medium score colors", async () => {
@@ -50,7 +50,7 @@ describe("RootCauseWizard", () => {
     }) as any;
     const user = userEvent.setup();
     render(<RootCauseWizard catalog="c" schema="s" table="t" column="col" />);
-    await user.click(screen.getByText("Analyze Root Cause"));
+    await user.click(screen.getByText("Analyze root cause"));
     expect(await screen.findByText("60%")).toBeInTheDocument();
     expect(screen.getByText("20%")).toBeInTheDocument();
   });
@@ -59,7 +59,7 @@ describe("RootCauseWizard", () => {
     global.fetch = mockFetch(withCandidates) as any;
     const user = userEvent.setup();
     render(<RootCauseWizard catalog="c" schema="s" table="t" column="col" />);
-    await user.click(screen.getByText("Analyze Root Cause"));
+    await user.click(screen.getByText("Analyze root cause"));
     expect(await screen.findByText(/1 candidate found/)).toBeInTheDocument();
     expect(screen.getByText("job failed")).toBeInTheDocument();
   });
@@ -68,7 +68,7 @@ describe("RootCauseWizard", () => {
     global.fetch = mockFetch({ ...withCandidates, candidates: [] }) as any;
     const user = userEvent.setup();
     render(<RootCauseWizard catalog="c" schema="s" table="t" column="col" />);
-    await user.click(screen.getByText("Analyze Root Cause"));
+    await user.click(screen.getByText("Analyze root cause"));
     expect(await screen.findByText("No likely root cause found")).toBeInTheDocument();
   });
 
@@ -76,7 +76,7 @@ describe("RootCauseWizard", () => {
     global.fetch = mockFetch("analysis broke", false) as any;
     const user = userEvent.setup();
     render(<RootCauseWizard catalog="c" schema="s" table="t" column="col" />);
-    await user.click(screen.getByText("Analyze Root Cause"));
+    await user.click(screen.getByText("Analyze root cause"));
     expect(await screen.findByText("analysis broke")).toBeInTheDocument();
   });
 
@@ -84,9 +84,9 @@ describe("RootCauseWizard", () => {
     global.fetch = mockFetch(withCandidates) as any;
     const user = userEvent.setup();
     render(<RootCauseWizard catalog="c" schema="s" table="t" column="col" />);
-    await user.click(screen.getByText("Analyze Root Cause"));
+    await user.click(screen.getByText("Analyze root cause"));
     await screen.findByText(/1 candidate found/);
     await user.click(screen.getByText(/Run another analysis/));
-    expect(screen.getByText("Analyze Root Cause")).toBeInTheDocument();
+    expect(screen.getByText("Analyze root cause")).toBeInTheDocument();
   });
 });

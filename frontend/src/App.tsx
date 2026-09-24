@@ -12,7 +12,7 @@ import { DQMetricsPanel } from "./components/DQMetricsPanel";
 import { GlossaryPanel } from "./components/GlossaryPanel";
 import { NotificationsPanel } from "./components/NotificationsPanel";
 import { ExportPanel } from "./components/ExportPanel";
-import { RootCauseWizard } from "./components/RootCauseWizard";
+import { ReportsHub } from "./components/reports/ReportsHub";
 import TableLineageWorkspace from "./components/table-lineage/TableLineageWorkspace";
 import { BiConsumersPanel } from "./components/BiConsumersPanel";
 import { StreamingTopologyPanel } from "./components/StreamingTopologyPanel";
@@ -289,8 +289,10 @@ export default function App() {
   if (route.view === "rootCause") {
     return (
       <>
-        <PageShell subtitle="Root-cause analysis" bare>
-          <RootCauseWizard />
+        <PageShell subtitle="Reports" bare>
+          <div className="max-w-6xl mx-auto px-8 py-8">
+            <ReportsHub onSelectTable={handleSelectTable} />
+          </div>
         </PageShell>
         <GlobalSearch onSelectTable={handleSelectTable} />
       </>
