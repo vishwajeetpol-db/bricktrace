@@ -30,7 +30,9 @@ describe("PageShell", () => {
   it("renders children and brand", () => {
     render(<PageShell><div>content here</div></PageShell>);
     expect(screen.getByText("content here")).toBeInTheDocument();
-    expect(screen.getByText("BrickTrace")).toBeInTheDocument();
+    // Two-color wordmark: "Brick" + "Trace" in separate spans.
+    expect(screen.getByText("Brick")).toBeInTheDocument();
+    expect(screen.getByText("Trace")).toBeInTheDocument();
   });
 
   it("opens global search on button click", async () => {

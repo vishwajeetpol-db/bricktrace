@@ -41,7 +41,9 @@ function PageShell({
             <img src="/bricktrace-logo.png" alt="" className="w-full h-full object-contain" />
           </span>
           <div className="text-left">
-            <h1 className="text-lg font-semibold text-white tracking-tight leading-none">BrickTrace</h1>
+            <h1 className="text-lg font-bold tracking-tight leading-none">
+              <span className="text-slate-100">Brick</span><span className="text-[#FF4520]">Trace</span>
+            </h1>
             {subtitle && <p className="text-[11px] text-slate-500 mt-1">{subtitle}</p>}
           </div>
         </button>
