@@ -1,22 +1,31 @@
 import { memo, ReactNode } from "react";
 import { motion } from "framer-motion";
-import { GitBranch, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { useLineageStore } from "../../store/lineageStore";
 import { goLanding } from "../../hooks/useRouter";
 import HeaderMenu from "../layout/HeaderMenu";
 
 interface Props {
   children: ReactNode;
+  /** Small line under the BrickTrace wordmark. */
+  subtitle?: string;
+  /** When true, render children directly (no centered max-width container) —
+   *  for panels that bring their own layout. Default wraps in the browse container. */
+  bare?: boolean;
 }
 
-function PageShell({ children }: Props) {
+function PageShell({
+  children,
+  subtitle = "Click any table to explore its data lineage",
+  bare = false,
+}: Props) {
   const setGlobalSearchOpen = useLineageStore((s) => s.setGlobalSearchOpen);
 
   return (
     <div className="h-screen w-screen flex flex-col bg-surface overflow-hidden">
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(99,102,241,0.04)_0%,transparent_50%)]" />
 
-      {/* Header */}
+      {/* Header — shared app chrome: logo (new brand mark) + global search + menu */}
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -25,13 +34,15 @@ function PageShell({ children }: Props) {
         <button
           onClick={goLanding}
           className="flex items-center gap-3 hover:opacity-90 transition-opacity"
+          title="Back to home"
+          aria-label="Back to home"
         >
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-purple-500 flex items-center justify-center shadow-[0_0_30px_rgba(99,102,241,0.2)]">
-            <GitBranch size={20} className="text-white" />
-          </div>
+          <span className="w-10 h-10 rounded-xl overflow-hidden inline-flex items-center justify-center shrink-0 shadow-[0_0_20px_rgba(255,85,32,0.35)]">
+            <img src="/bricktrace-logo.png" alt="" className="w-full h-full object-contain" />
+          </span>
           <div className="text-left">
-            <h1 className="text-lg font-semibold text-white tracking-tight">BrickTrace</h1>
-            <p className="text-[11px] text-slate-500">Click any table to explore its data lineage</p>
+            <h1 className="text-lg font-semibold text-white tracking-tight leading-none">BrickTrace</h1>
+            {subtitle && <p className="text-[11px] text-slate-500 mt-1">{subtitle}</p>}
           </div>
         </button>
 
@@ -50,14 +61,18 @@ function PageShell({ children }: Props) {
 
       {/* Content area */}
       <div className="relative z-10 flex-1 overflow-y-auto scrollbar-thin">
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.05 }}
-          className="max-w-6xl mx-auto px-8 py-8"
-        >
-          {children}
-        </motion.div>
+        {bare ? (
+          children
+        ) : (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.05 }}
+            className="max-w-6xl mx-auto px-8 py-8"
+          >
+            {children}
+          </motion.div>
+        )}
       </div>
     </div>
   );
