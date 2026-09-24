@@ -427,6 +427,27 @@ async def lineage_freshness(
         raise HTTPException(status_code=500, detail="Failed to lineage freshness.")
 
 
+@router.get("/workspace-info")
+async def lineage_workspace_info():
+    """Workspace id → friendly name for the graph's cross-workspace legend.
+
+    Names come from the admin-curated federated peer registry (its display_name);
+    the app's own workspace id is returned so the UI can label it 'This workspace'.
+    Fail-open: an empty names map just means the legend shows raw ids.
+    """
+    names: dict[str, str] = {}
+    try:
+        from backend.federated_workspaces import list_peer_workspaces
+        for p in await asyncio.to_thread(list_peer_workspaces):
+            wid = str(p.get("workspace_id") or "").strip()
+            nm = (p.get("display_name") or "").strip()
+            if wid and nm:
+                names[wid] = nm
+    except Exception:
+        logger.info("lineage: workspace-info peer names unavailable (non-fatal)")
+    return {"app_workspace_id": _app_workspace_id(), "names": names}
+
+
 # ---------------------------------------------------------------------------
 # Capability 27 / 28 — Analyze producer (LLM Approach A)
 # ---------------------------------------------------------------------------

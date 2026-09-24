@@ -432,3 +432,26 @@ class TestLineageExtensions:
     def test_entities_requires_params(self, app_client):
         resp = app_client.get("/api/lineage/entities")
         assert resp.status_code == 422
+
+
+class TestWorkspaceInfo:
+    """GET /api/lineage/workspace-info — workspace id -> friendly name for the
+    cross-workspace graph legend. Fail-open."""
+
+    def test_returns_app_ws_and_peer_names(self, app_client):
+        with patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
+             patch("backend.federated_workspaces.list_peer_workspaces",
+                   return_value=[{"workspace_id": "222", "display_name": "peer-silver-ws"}]):
+            resp = app_client.get("/api/lineage/workspace-info")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["app_workspace_id"] == "111"
+        assert body["names"]["222"] == "peer-silver-ws"
+
+    def test_fails_open_when_peers_unavailable(self, app_client):
+        with patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
+             patch("backend.federated_workspaces.list_peer_workspaces",
+                   side_effect=RuntimeError("no warehouse")):
+            resp = app_client.get("/api/lineage/workspace-info")
+        assert resp.status_code == 200
+        assert resp.json()["names"] == {}

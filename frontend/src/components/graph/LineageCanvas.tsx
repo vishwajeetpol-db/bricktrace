@@ -368,6 +368,16 @@ function LineageCanvas() {
   // metastore-wide so they don't participate.
   const workspaceColors = useMemo(() => assignWorkspaceColors(augNodes as any[]), [augNodes]);
 
+  // Friendly workspace names for the legend (peer registry names + this workspace).
+  const [wsInfo, setWsInfo] = useState<{ app_workspace_id: string | null; names: Record<string, string> }>(
+    { app_workspace_id: null, names: {} },
+  );
+  useEffect(() => {
+    let cancelled = false;
+    api.getWorkspaceInfo().then((r) => { if (!cancelled) setWsInfo(r); }).catch(() => { /* legend falls back to ids */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const [flowNodes, setFlowNodes] = useState<Node[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
   const [tooltipData, setTooltipData] = useState<{
@@ -1007,18 +1017,22 @@ function LineageCanvas() {
           <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
             Workspaces
           </div>
-          <div className="flex flex-col gap-1">
-            {[...workspaceColors.entries()].map(([wsId, color]) => (
-              <div key={wsId} className="flex items-center gap-2">
-                <span
-                  className="w-1 h-3.5 rounded-sm flex-shrink-0"
-                  style={{ backgroundColor: color }}
-                />
-                <span className="font-mono text-[10px] text-slate-300 truncate" title={wsId}>
-                  {wsId}
-                </span>
-              </div>
-            ))}
+          <div className="flex flex-col gap-1.5">
+            {[...workspaceColors.entries()].map(([wsId, color]) => {
+              const name = wsInfo.names[wsId] || (wsId === wsInfo.app_workspace_id ? "This workspace" : null);
+              return (
+                <div key={wsId} className="flex items-center gap-2">
+                  <span
+                    className="w-1 h-3.5 rounded-sm flex-shrink-0 self-stretch"
+                    style={{ backgroundColor: color }}
+                  />
+                  <div className="min-w-0 leading-tight">
+                    {name && <div className="text-[10px] text-slate-200 truncate" title={name}>{name}</div>}
+                    <div className="font-mono text-[9px] text-slate-500 truncate" title={wsId}>{wsId}</div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

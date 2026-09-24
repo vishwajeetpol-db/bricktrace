@@ -829,6 +829,13 @@ export const api = {
       `${BASE}/entity-name?entity_type=${encodeURIComponent(entityType)}&entity_id=${encodeURIComponent(entityId)}`
     ),
 
+  // Workspace id -> friendly name for the cross-workspace graph legend. Names
+  // come from the admin peer registry; app_workspace_id flags the local one.
+  getWorkspaceInfo: () =>
+    fetchJson<{ app_workspace_id: string | null; names: Record<string, string> }>(
+      `${BASE}/workspace-info`
+    ),
+
   // Health check for a JOB/PIPELINE node — last N runs + summary. Cached per
   // entity; refresh=true recomputes live.
   getEntityRuns: (entityType: string, entityId: string, limit = 5, refresh = false) =>
