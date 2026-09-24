@@ -335,3 +335,11 @@ class TestAssertDatabricksWorkspaceUrl:
         from backend.validators import assert_databricks_workspace_url
         u = "https://adb-1.2.azuredatabricks.net"  # may resolve to a private IP or not at all
         assert assert_databricks_workspace_url(u) == u
+
+
+class TestAssertDatabricksWorkspaceUrlEdges:
+    def test_rejects_empty_none_and_hostless(self):
+        from backend.validators import assert_databricks_workspace_url, UnsafeOutboundURL
+        for bad in ["", None, "https://", "not a url"]:
+            with pytest.raises(UnsafeOutboundURL):
+                assert_databricks_workspace_url(bad)

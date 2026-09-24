@@ -270,3 +270,25 @@ class TestCompareProducersRoute:
         assert resp.status_code == 400
         assert "at most" in resp.json()["detail"]
         compare.assert_not_called()
+
+
+class TestSourceClientRouting:
+    """_source_client() returns the app client normally, and a peer client only
+    while a fetch_workspace() context is active."""
+
+    def test_local_by_default(self):
+        import backend.server.producer_source as ps
+        app = MagicMock()
+        with patch.object(ps, "_get_client", return_value=app):
+            assert ps._source_client() is app
+
+    def test_peer_client_inside_fetch_workspace(self):
+        import backend.server.producer_source as ps
+        app, peer = MagicMock(), MagicMock()
+        with patch.object(ps, "_get_client", return_value=app), \
+             patch("backend.federated_workspaces.get_workspace_client", return_value=peer) as gwc:
+            with ps.fetch_workspace("222"):
+                assert ps._source_client() is peer
+            gwc.assert_called_once_with("222")
+            # context restored after the block
+            assert ps._source_client() is app
