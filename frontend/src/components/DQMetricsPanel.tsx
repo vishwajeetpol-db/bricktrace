@@ -366,6 +366,8 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
                 columns={profile?.columns ?? []}
                 existingRules={rules}
                 onSaved={() => analyze(selected)}
+                onRunLiveProfile={runLiveProfile}
+                profiling={profileLoading}
               />
             </Section>
           )}

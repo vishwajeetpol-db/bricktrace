@@ -167,11 +167,15 @@ export function RuleSuggestions({
   columns,
   existingRules,
   onSaved,
+  onRunLiveProfile,
+  profiling,
 }: {
   tableFqn: string;
   columns: DQProfileColumn[];
   existingRules: DQRule[];
   onSaved: () => void;
+  onRunLiveProfile?: () => void;
+  profiling?: boolean;
 }) {
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
@@ -221,9 +225,25 @@ export function RuleSuggestions({
     }
   };
 
-  const noLive = columns.length > 0 && columns.every((c) => c.total_rows == null);
-  if (noLive) {
-    return <p className="text-[12px] text-slate-500">Run a live profile first to get rule suggestions.</p>;
+  const hasLive = columns.some((c) => c.total_rows != null);
+  if (!hasLive) {
+    // No live profile yet — suggestions need distinct/null counts, so offer to run it.
+    return (
+      <div className="flex flex-col items-start gap-2">
+        <p className="text-[12px] text-slate-500">
+          Suggestions come from a live column profile (distinct &amp; null counts).
+        </p>
+        {onRunLiveProfile && (
+          <button
+            onClick={onRunLiveProfile}
+            disabled={profiling}
+            className="px-4 py-1.5 bg-accent/90 hover:bg-accent text-white rounded-md text-[12px] font-medium disabled:opacity-40"
+          >
+            {profiling ? "Profiling…" : "Profile columns to get suggestions"}
+          </button>
+        )}
+      </div>
+    );
   }
   if (suggestions.length === 0) {
     return <p className="text-[12px] text-slate-500">No obvious rules to suggest — columns already covered or too sparse.</p>;

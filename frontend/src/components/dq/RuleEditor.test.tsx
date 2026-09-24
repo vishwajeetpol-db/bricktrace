@@ -75,16 +75,21 @@ describe("RuleSuggestions", () => {
     expect(screen.getByText("on email")).toBeInTheDocument();
   });
 
-  it("prompts for a live profile when total_rows is missing", () => {
+  it("prompts to run a live profile (with a CTA) when there is no live data", async () => {
+    const onRun = vi.fn();
+    const user = userEvent.setup();
     render(
       <RuleSuggestions
         tableFqn="main.s.t"
         columns={[{ name: "x", distinct_count: 5, null_pct: 0 }]}
         existingRules={[]}
         onSaved={() => {}}
+        onRunLiveProfile={onRun}
       />,
     );
-    expect(screen.getByText(/Run a live profile first/i)).toBeInTheDocument();
+    expect(screen.getByText(/Suggestions come from a live column profile/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Profile columns to get suggestions/i }));
+    expect(onRun).toHaveBeenCalled();
   });
 
   it("adds selected suggestions", async () => {
