@@ -833,7 +833,7 @@ export const api = {
   // come from the admin peer registry; app_workspace_id flags the local one.
   getWorkspaceInfo: () =>
     fetchJson<{ app_workspace_id: string | null; names: Record<string, string> }>(
-      `${BASE}/workspace-info`
+      `${BASE}/lineage/workspace-info`
     ),
 
   // Health check for a JOB/PIPELINE node — last N runs + summary. Cached per
