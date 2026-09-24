@@ -17,6 +17,10 @@ type EntityNodeData = {
   last_run: string | null;
   owner: string | null;
   cost_usd: number | null;
+  workspace_id?: string | null;
+  // Set by LineageCanvas only when the graph spans >1 workspace — the colour for
+  // this node's workspace. Absent (single-workspace graph) means no indicator.
+  workspaceColor?: string;
   isRevealed?: boolean;
   isDimmed?: boolean;
   isHighlighted?: boolean;
@@ -284,7 +288,16 @@ function EntityNodeComponent({ data }: NodeProps<EntityNodeData>) {
           border bg-gradient-to-r ${bgGradient} ${borderColor}
           ${isDimmed ? "pointer-events-none" : ""}
         `}
-        style={{ minWidth: 160 }}
+        // Left accent bar = which workspace this producer ran in (only when the
+        // graph spans >1 workspace). A thick colored left border keeps freshness
+        // on the status dot/icon and never competes with it. See workspaceColors.ts.
+        style={{
+          minWidth: 160,
+          ...(data.workspaceColor
+            ? { borderLeftColor: data.workspaceColor, borderLeftWidth: 4, paddingLeft: 11 }
+            : {}),
+        }}
+        title={data.workspaceColor ? `Workspace ${data.workspace_id}` : undefined}
       >
         <div className="flex items-center gap-2.5">
           <div className={`w-1.5 h-1.5 rounded-full ${dotColor} shadow-[0_0_6px] ${dotShadow} flex-shrink-0`} />

@@ -101,13 +101,13 @@ class TestFocusOnTarget:
 
 class TestFetchEntityParameters:
     def test_no_client_returns_empty(self):
-        with patch("backend.lineage_service._get_client", return_value=None):
+        with patch("backend.server.producer_source._source_client", return_value=None):
             assert fa._fetch_entity_parameters("JOB", "1") == {}
 
     def test_pipeline_configuration(self):
         client = MagicMock()
         client.api_client.do.return_value = {"spec": {"configuration": {"env": "prod"}}}
-        with patch("backend.lineage_service._get_client", return_value=client):
+        with patch("backend.server.producer_source._source_client", return_value=client):
             out = fa._fetch_entity_parameters("PIPELINE", "p1")
         assert out == {"env": "prod"}
 
@@ -117,19 +117,19 @@ class TestFetchEntityParameters:
             "parameters": [{"name": "run_date", "default": "2026-01-01"}, {"name": None}],
             "tasks": [{"notebook_task": {"base_parameters": {"mode": "full"}}}],
         }}
-        with patch("backend.lineage_service._get_client", return_value=client):
+        with patch("backend.server.producer_source._source_client", return_value=client):
             out = fa._fetch_entity_parameters("JOB", "42")
         assert out == {"run_date": "2026-01-01", "mode": "full"}
 
     def test_unknown_type_returns_empty(self):
         client = MagicMock()
-        with patch("backend.lineage_service._get_client", return_value=client):
+        with patch("backend.server.producer_source._source_client", return_value=client):
             assert fa._fetch_entity_parameters("NOTEBOOK", "n1") == {}
 
     def test_exception_returns_empty(self):
         client = MagicMock()
         client.api_client.do.side_effect = RuntimeError("boom")
-        with patch("backend.lineage_service._get_client", return_value=client):
+        with patch("backend.server.producer_source._source_client", return_value=client):
             assert fa._fetch_entity_parameters("PIPELINE", "p1") == {}
 
 

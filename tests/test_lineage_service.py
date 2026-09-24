@@ -149,6 +149,42 @@ class TestExecuteSql:
 
 
 # ---------------------------------------------------------------------------
+# App workspace id (cross-workspace guard support)
+# ---------------------------------------------------------------------------
+class TestAppWorkspaceId:
+    def test_returns_and_caches(self):
+        ls._app_workspace_id_cache = None
+        client = MagicMock()
+        client.get_workspace_id.return_value = 12345
+        with patch.object(ls, "_get_client", return_value=client):
+            assert ls._app_workspace_id() == "12345"
+            assert ls._app_workspace_id() == "12345"  # served from cache
+        client.get_workspace_id.assert_called_once()
+        ls._app_workspace_id_cache = None
+
+    def test_fails_open_to_none(self):
+        ls._app_workspace_id_cache = None
+        client = MagicMock()
+        client.get_workspace_id.side_effect = RuntimeError("no perms")
+        with patch.object(ls, "_get_client", return_value=client):
+            assert ls._app_workspace_id() is None
+        ls._app_workspace_id_cache = None
+
+
+class TestEntityKey:
+    def test_namespaced_when_workspace_present(self):
+        assert ls._entity_key("JOB", "123", "999") == "entity:999:JOB:123"
+
+    def test_legacy_when_workspace_missing(self):
+        # None or empty falls back to the 3-part legacy id (older callers/fixtures)
+        assert ls._entity_key("JOB", "123", None) == "entity:JOB:123"
+        assert ls._entity_key("JOB", "123", "") == "entity:JOB:123"
+
+    def test_numeric_workspace_coerced(self):
+        assert ls._entity_key("PIPELINE", "p1", 999) == "entity:999:PIPELINE:p1"
+
+
+# ---------------------------------------------------------------------------
 # Graph building + classification
 # ---------------------------------------------------------------------------
 class TestGraphBuild:
@@ -194,6 +230,68 @@ class TestGraphBuild:
         pairs = {(e.source, e.target) for e in resp.edges}
         assert ("main.s.src", "entity:PIPELINE:p1") in pairs
         assert ("entity:PIPELINE:p1", "main.s.out") in pairs
+        # No workspace_id in the row → node carries None (backward compatible)
+        assert ent[0].workspace_id is None
+
+    def test_entity_node_captures_workspace_id(self):
+        """Phase 0: the producer's emitting workspace_id flows onto the node,
+        coerced to str, so cross-workspace producers can be told apart."""
+        client = MagicMock()
+        rows = [{
+            "source_table_full_name": "main.s.src", "source_type": "TABLE",
+            "target_table_full_name": "main.s.out", "target_type": "TABLE",
+            "entity_type": "PIPELINE", "entity_id": "p1",
+            "event_time": "2026-07-01T00:00:00Z", "created_by": "me@x.com",
+            "workspace_id": 7405616972951593,  # numeric in the system table
+        }]
+        with patch.object(ls, "_execute_sql", return_value=[]), \
+             patch.object(ls, "_entity_cost", return_value=None), \
+             patch.object(ls, "_maybe_refresh_cost_cache"):
+            resp = ls._build_graph_from_rows(client, rows)
+        ent = [n for n in resp.nodes if getattr(n, "node_type", None) == "entity"]
+        assert ent and ent[0].workspace_id == "7405616972951593"
+
+    def test_entity_node_id_is_workspace_namespaced(self):
+        """When workspace_id is present the node id carries it, and the edges that
+        reference the entity use the SAME namespaced id (no orphan edges)."""
+        client = MagicMock()
+        rows = [{
+            "source_table_full_name": "main.s.src", "source_type": "TABLE",
+            "target_table_full_name": "main.s.out", "target_type": "TABLE",
+            "entity_type": "JOB", "entity_id": "123",
+            "event_time": "2026-07-01T00:00:00Z", "created_by": "me@x.com",
+            "workspace_id": "999",
+        }]
+        with patch.object(ls, "_execute_sql", return_value=[]), \
+             patch.object(ls, "_entity_cost", return_value=None), \
+             patch.object(ls, "_maybe_refresh_cost_cache"):
+            resp = ls._build_graph_from_rows(client, rows)
+        ent = [n for n in resp.nodes if getattr(n, "node_type", None) == "entity"]
+        assert ent and ent[0].id == "entity:999:JOB:123"
+        # edges reference the SAME namespaced id
+        pairs = {(e.source, e.target) for e in resp.edges}
+        assert ("main.s.src", "entity:999:JOB:123") in pairs
+        assert ("entity:999:JOB:123", "main.s.out") in pairs
+
+    def test_two_workspaces_same_job_id_are_distinct_nodes(self):
+        """The collision Phase 0 closes: job 123 in two workspaces must NOT collapse."""
+        client = MagicMock()
+        rows = [
+            {"source_table_full_name": "main.s.a", "source_type": "TABLE",
+             "target_table_full_name": "main.s.b", "target_type": "TABLE",
+             "entity_type": "JOB", "entity_id": "123", "workspace_id": "111",
+             "event_time": "2026-07-01T00:00:00Z", "created_by": "x"},
+            {"source_table_full_name": "main.s.c", "source_type": "TABLE",
+             "target_table_full_name": "main.s.d", "target_type": "TABLE",
+             "entity_type": "JOB", "entity_id": "123", "workspace_id": "222",
+             "event_time": "2026-07-01T00:00:00Z", "created_by": "x"},
+        ]
+        with patch.object(ls, "_execute_sql", return_value=[]), \
+             patch.object(ls, "_entity_cost", return_value=None), \
+             patch.object(ls, "_maybe_refresh_cost_cache"):
+            resp = ls._build_graph_from_rows(client, rows)
+        ent_ids = {n.id for n in resp.nodes if getattr(n, "node_type", None) == "entity"}
+        assert ent_ids == {"entity:111:JOB:123", "entity:222:JOB:123"}
 
     def test_build_graph_read_after_write_no_back_edge(self):
         """A table the entity WRITES then reads back becomes a direct table edge."""
@@ -362,6 +460,34 @@ class TestEntityNameAndCost:
         with patch.object(ls, "_get_client", return_value=client):
             out = ls.resolve_entity_name("JOB", "123")
         assert isinstance(out, dict)
+
+    def test_resolve_notebook_path_returns_path_id_unchanged(self):
+        # A "/"-path id is a path already — no audit lookup needed.
+        with patch.object(ls, "_execute_sql") as mock_sql:
+            out = ls._resolve_notebook_path("/Users/x/nb")
+        assert out == "/Users/x/nb"
+        mock_sql.assert_not_called()
+
+    def test_resolve_notebook_path_resolves_numeric_id_via_audit(self):
+        ls.invalidate_cache("notebook_path:")
+        with patch.object(ls, "get_read_client", return_value=MagicMock()), \
+             patch.object(ls, "_execute_sql",
+                          return_value=[{"path": "/Users/x/My Notebook"}]) as mock_sql:
+            out = ls._resolve_notebook_path("627491938131442")
+        assert out == "/Users/x/My Notebook"
+        # the numeric id was interpolated into the audit query
+        assert "627491938131442" in mock_sql.call_args[0][1]
+
+    def test_resolve_notebook_path_unresolvable_returns_none(self):
+        ls.invalidate_cache("notebook_path:")
+        with patch.object(ls, "get_read_client", return_value=MagicMock()), \
+             patch.object(ls, "_execute_sql", return_value=[]):
+            assert ls._resolve_notebook_path("999999999999999") is None
+
+    def test_resolve_notebook_path_rejects_unsafe_id(self):
+        with patch.object(ls, "_execute_sql") as mock_sql:
+            assert ls._resolve_notebook_path("1; DROP TABLE x") is None
+        mock_sql.assert_not_called()
 
     def test_refresh_cost_cache_populates(self):
         client = MagicMock()

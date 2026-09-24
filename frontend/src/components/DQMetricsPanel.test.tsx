@@ -4,107 +4,131 @@ import userEvent from "@testing-library/user-event";
 import { DQMetricsPanel } from "./DQMetricsPanel";
 import { useLineageStore } from "../store/lineageStore";
 
-function mockFetch(data: any, ok = true) {
-  return vi.fn().mockResolvedValue({ ok, json: async () => data, text: async () => (typeof data === "string" ? data : JSON.stringify(data)) });
+/** Route a fetch mock by URL fragment. First matching fragment (insertion order) wins. */
+function routeFetch(routes: [string, any][], fallback: any = {}) {
+  return vi.fn((url: string) => {
+    const u = String(url);
+    for (const [frag, data] of routes) {
+      if (u.includes(frag)) {
+        const ok = !(data && data.__status && data.__status >= 400);
+        return Promise.resolve({
+          ok,
+          status: ok ? 200 : data.__status,
+          json: async () => data,
+          text: async () => (typeof data === "string" ? data : JSON.stringify(data)),
+        });
+      }
+    }
+    return Promise.resolve({ ok: true, status: 200, json: async () => fallback, text: async () => JSON.stringify(fallback) });
+  });
 }
 
-const result = {
+const metrics = {
   table_fqn: "main.s.t",
   quality_score: 0.95,
   quality_grade: "A",
   rules_evaluated: 3,
   rules_total: 4,
-  sample_size: 1000,
+  sample_size: 10000,
+  coverage_complete: true,
   metrics: [
-    { rule_id: "r1", column: "email", rule_type: "not_null", pass_rate: 0.995, failing_rows: 5, status: "pass", severity: "high" },
-    { rule_id: "r2", column: "age", rule_type: "range", pass_rate: null, status: "error", severity: "low", error: "bad rule" },
+    { rule_id: "r1", column: "email", rule_type: "NOT_NULL", pass_rate: 0.995, failing_rows: 5, status: "pass", severity: "ERROR" },
+    { rule_id: "r2", column: "age", rule_type: "RANGE", pass_rate: 0.6, failing_rows: 40, status: "fail", severity: "ERROR" },
   ],
 };
+const rulesList = { rules: [{ table_fqn: "main.s.t", column_name: "email", rule_type: "NOT_NULL", severity: "ERROR" }] };
+const trends = {
+  table_fqn: "main.s.t",
+  trend: "improving",
+  data_points: [
+    { run_id: "1", quality_score: 0.8, rules_evaluated: 3, rules_passed: 2, rules_failed: 1, evaluated_at: "2026-09-01T00:00:00Z" },
+    { run_id: "2", quality_score: 0.95, rules_evaluated: 3, rules_passed: 3, rules_failed: 0, evaluated_at: "2026-09-10T00:00:00Z" },
+  ],
+};
+const profile = {
+  table_full_name: "main.s.t",
+  row_count_approx: "12345",
+  profile_source: "delta_stats",
+  columns: [{ name: "email", distinct_count: 100, null_pct: 0.5, min: null, max: null }],
+};
+const propagation = {
+  table_fqn: "main.s.t",
+  upstream_quality: [
+    { upstream_table: "main.s.up1", has_dq_rules: true, rule_count: 2 },
+    { upstream_table: "main.s.up2", has_dq_rules: false, rule_count: 0 },
+  ],
+  upstream_count: 2,
+  covered_count: 1,
+};
+
+function adminRoutes() {
+  return routeFetch([
+    ["/dq-rules/metrics", metrics],
+    ["/dq-rules/trends", trends],
+    ["/dq-rules/propagation", propagation],
+    ["/diagnostics/profile", profile],
+    ["/dq-rules/record-metrics", { status: "ok", run_id: "x" }],
+    ["/dq-rules", rulesList], // list (portfolio + per-table)
+  ]);
+}
 
 describe("DQMetricsPanel", () => {
-  // Running checks executes stored rule expressions as the app SP, so the backend
-  // admin-gates GET /api/dq-rules/metrics and the button is admin-only. Tests that
-  // drive it claim an admin identity.
-  beforeEach(() => useLineageStore.setState({ isAdmin: true }));
+  beforeEach(() => useLineageStore.setState({ isAdmin: true, allTables: [] }));
   afterEach(() => {
     vi.restoreAllMocks();
     useLineageStore.setState({ isAdmin: false });
   });
 
-  it("renders header", () => {
+  it("renders the table picker and Analyze button", () => {
+    global.fetch = routeFetch([["/dq-rules", { rules: [] }]]) as any;
     render(<DQMetricsPanel />);
-    expect(screen.getByText("Data Quality Metrics")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("catalog.schema.table")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Analyze/i })).toBeInTheDocument();
   });
 
-  it("disables Run Checks for non-admins and explains why", () => {
-    useLineageStore.setState({ isAdmin: false });
-    render(<DQMetricsPanel tableFqn="main.s.t" />);
-    expect(screen.getByRole("button", { name: /Run Checks/i })).toBeDisabled();
-    expect(screen.getByText(/restricted to admins/i)).toBeInTheDocument();
+  it("shows the empty portfolio onboarding when no rules exist", async () => {
+    global.fetch = routeFetch([["/dq-rules", { rules: [] }]]) as any;
+    render(<DQMetricsPanel />);
+    expect(await screen.findByText(/No DQ rules authored yet/i)).toBeInTheDocument();
   });
 
-  it("runs checks and renders quality score + metrics", async () => {
-    global.fetch = mockFetch(result) as any;
+  it("lists tables that have rules and analyzes one on click", async () => {
+    global.fetch = routeFetch([
+      ["/dq-rules/metrics", metrics],
+      ["/dq-rules/trends", trends],
+      ["/dq-rules/propagation", propagation],
+      ["/diagnostics/profile", profile],
+      ["/dq-rules/record-metrics", { status: "ok" }],
+      ["/dq-rules", { rules: [{ table_fqn: "main.s.t", column_name: "email", rule_type: "NOT_NULL" }] }],
+    ]) as any;
     const user = userEvent.setup();
-    render(<DQMetricsPanel tableFqn="main.s.t" />);
-    await user.click(screen.getByText("Run Checks"));
+    render(<DQMetricsPanel />);
+    const card = await screen.findByText("main.s.t");
+    await user.click(card);
     expect(await screen.findByText("95%")).toBeInTheDocument();
     expect(screen.getByText("A")).toBeInTheDocument();
-    expect(screen.getByText(/not_null/)).toBeInTheDocument();
-    expect(screen.getByText("bad rule")).toBeInTheDocument();
   });
 
-  it("shows empty metrics message", async () => {
-    global.fetch = mockFetch({ ...result, metrics: [], quality_grade: null, quality_score: null }) as any;
-    const user = userEvent.setup();
+  it("renders score, grade, rule results, trend and upstream for an admin", async () => {
+    global.fetch = adminRoutes() as any;
     render(<DQMetricsPanel tableFqn="main.s.t" />);
-    await user.click(screen.getByText("Run Checks"));
-    expect(await screen.findByText(/No DQ rules defined/)).toBeInTheDocument();
-    expect(screen.getByText("N/A")).toBeInTheDocument();
+    expect(await screen.findByText("95%")).toBeInTheDocument();
+    expect(screen.getByText("A")).toBeInTheDocument();
+    // rule rows
+    expect(screen.getByText("NOT_NULL")).toBeInTheDocument();
+    expect(screen.getByText("RANGE")).toBeInTheDocument();
+    // trend direction badge
+    expect(screen.getByText(/improving/i)).toBeInTheDocument();
+    // upstream coverage warning
+    expect(screen.getByText(/upstream table\(s\) have no DQ rules/i)).toBeInTheDocument();
   });
 
-  it.each(["B", "D", "F"])("renders grade %s color", async (grade) => {
-    global.fetch = mockFetch({ ...result, quality_grade: grade, metrics: [] }) as any;
-    const user = userEvent.setup();
+  it("skips live scoring for non-admins but still shows rules & profile", async () => {
+    useLineageStore.setState({ isAdmin: false });
+    global.fetch = adminRoutes() as any;
     render(<DQMetricsPanel tableFqn="main.s.t" />);
-    await user.click(screen.getByText("Run Checks"));
-    expect(await screen.findByText(grade)).toBeInTheDocument();
-  });
-
-  it("shows error on failure", async () => {
-    global.fetch = mockFetch("boom error", false) as any;
-    const user = userEvent.setup();
-    render(<DQMetricsPanel tableFqn="main.s.t" />);
-    await user.click(screen.getByText("Run Checks"));
-    expect(await screen.findByText("boom error")).toBeInTheDocument();
-  });
-
-  it("does nothing when fqn is empty", async () => {
-    const spy = vi.fn();
-    global.fetch = spy as any;
-    render(<DQMetricsPanel />);
-    // Run Checks disabled with empty fqn; button present
-    expect(screen.getByText("Run Checks")).toBeDisabled();
-    expect(spy).not.toHaveBeenCalled();
-  });
-
-  it("runs on Enter key and renders all status/grade variants", async () => {
-    const fetchMock = mockFetch({
-      table_fqn: "main.s.t", quality_score: 0.5, quality_grade: "C", rules_evaluated: 4, rules_total: 4, sample_size: 50,
-      metrics: [
-        { rule_id: "1", column: "a", rule_type: "not_null", pass_rate: 1.0, status: "pass", severity: "low" },
-        { rule_id: "2", column: "b", rule_type: "unique", pass_rate: 0.95, status: "warn", severity: "med" },
-        { rule_id: "3", column: "c", rule_type: "range", pass_rate: 0.5, status: "fail", severity: "high", failing_rows: 25 },
-        { rule_id: "4", column: "", rule_type: "custom", pass_rate: null, status: "unknown", severity: "low" },
-      ],
-    });
-    global.fetch = fetchMock as any;
-    const user = userEvent.setup();
-    render(<DQMetricsPanel />);
-    const input = screen.getByPlaceholderText("catalog.schema.table");
-    await user.type(input, "main.s.t{Enter}");
-    expect(await screen.findByText("C")).toBeInTheDocument();
-    expect(screen.getAllByText("50%").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("25 failing")).toBeInTheDocument();
+    expect(await screen.findByText(/Live scoring/i)).toBeInTheDocument();
+    // authored rule inventory still renders
+    expect(await screen.findByText("NOT_NULL")).toBeInTheDocument();
   });
 });

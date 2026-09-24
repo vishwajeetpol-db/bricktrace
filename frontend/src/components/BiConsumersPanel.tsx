@@ -46,7 +46,7 @@ export function BiConsumersPanel({ catalog = '' }: Props) {
   };
 
   return (
-    <div className="min-h-screen bg-surface text-slate-200 p-6">
+    <div className="text-slate-200 p-6">
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center gap-3 mb-6">
           <BarChart3 size={22} className="text-cyan-400" />

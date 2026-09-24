@@ -61,7 +61,7 @@ export function StreamingTopologyPanel({ catalog = '' }: Props) {
   const sourceOnlyFqns = [...edgeSourceFqns].filter(fqn => !streamingFqns.has(fqn));
 
   return (
-    <div className="min-h-screen bg-surface text-slate-200 p-6">
+    <div className="text-slate-200 p-6">
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center gap-3 mb-6">
           <Radio size={22} className="text-emerald-400" />

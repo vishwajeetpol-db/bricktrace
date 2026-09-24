@@ -609,7 +609,7 @@ class TestFetchPipelineSourceFull:
 
 class TestAnalyzeProducerUnreadableBranches:
     def test_entity_missing_reason_code(self):
-        def fake_fetch(entity_type, entity_id, diag=None):
+        def fake_fetch(entity_type, entity_id, diag=None, source_workspace_id=None):
             if diag is not None:
                 diag.note_exception("job:1", Exception("job was not found"))
             return ""
@@ -630,7 +630,7 @@ class TestAnalyzeProducerUnreadableBranches:
         assert "No source code available" in out["detail"]
 
     def test_access_denied_without_sp_client_id(self):
-        def fake_fetch(entity_type, entity_id, diag=None):
+        def fake_fetch(entity_type, entity_id, diag=None, source_workspace_id=None):
             if diag is not None:
                 diag.note_exception("/W/x", RuntimeError("PERMISSION_DENIED"))
             return ""

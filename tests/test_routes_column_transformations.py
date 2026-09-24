@@ -31,6 +31,7 @@ class TestAnalyzeProducer:
         # _assert_producer_of is patched out here: this test covers the handler, and
         # the guard itself has dedicated coverage in TestProducerAuthorization.
         with patch("backend.routes.lineage._assert_producer_of"), \
+             patch("backend.routes.lineage._resolve_fetch_workspace", return_value=None), \
              patch("backend.routes.lineage.analyze_producer",
                    return_value={"source": "llm", "columns": [], "version": 1}):
             resp = app_client.post("/api/analyze-producer", json={
@@ -122,6 +123,7 @@ class TestColumnTransformations:
             {"type": "result", "derived": True, "columns": [{"target_column": "x"}], "version": 3},
         ]
         with patch("backend.routes.lineage._assert_producer_of"), \
+             patch("backend.routes.lineage._resolve_fetch_workspace", return_value=None), \
              patch("backend.server.framework_analysis.deep_analyze_stream",
                    return_value=iter(events)):
             resp = app_client.post("/api/column-transformations/deep-analyze", json={
@@ -137,6 +139,7 @@ class TestColumnTransformations:
         def boom(*a, **k):
             raise RuntimeError("mid-flight")
         with patch("backend.routes.lineage._assert_producer_of"), \
+             patch("backend.routes.lineage._resolve_fetch_workspace", return_value=None), \
              patch("backend.server.framework_analysis.deep_analyze_stream", side_effect=boom):
             resp = app_client.post("/api/column-transformations/deep-analyze", json={
                 "catalog": "c", "schema_name": "s", "table": "t",
@@ -187,14 +190,15 @@ class TestProducerAuthorization:
         assert resp.status_code == 200
         mock_analyze.assert_called_once()
 
-    def test_admin_bypasses_the_producer_check(self, admin_client):
-        # Admins already have the broader access the guard is protecting.
-        with patch("backend.routes.lineage._execute_sql") as mock_sql, \
+    def test_admin_bypasses_the_recorded_producer_check(self, admin_client):
+        # Admins skip the recorded-producer 403, but the guard query still runs so
+        # the cross-workspace check can fire. With no workspace_id in the row it
+        # fails open and the analysis proceeds.
+        with patch("backend.routes.lineage._execute_sql", return_value=[]), \
              patch("backend.routes.lineage.analyze_producer",
                    return_value={"source": "llm", "columns": []}):
             resp = admin_client.post("/api/analyze-producer", json=self._NB)
         assert resp.status_code == 200
-        mock_sql.assert_not_called()
 
     def test_lookup_failure_fails_closed(self, app_client):
         # If the lineage check can't run we refuse rather than trusting the caller.
@@ -212,6 +216,134 @@ class TestProducerAuthorization:
                 "entity_type": "NOTEBOOK", "entity_id": "/Users/someone-else/private"})
         assert resp.status_code == 403
         mock_stream.assert_not_called()
+
+
+class TestCrossWorkspaceGuard:
+    """Phase 0 (FEDERATED_LINEAGE_DESIGN): lineage is metastore-wide, so a
+    recorded producer may run in another workspace. Its source is fetched via
+    THIS workspace's client and would 404 opaquely — refuse up front with 409."""
+
+    _JOB = {"entity_type": "JOB", "entity_id": "123", "target_table": "c.s.t"}
+
+    def test_cross_workspace_producer_refused_409(self, app_client):
+        # Recorded producer, but its workspace_id differs from the app's own.
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999_other"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111_this"), \
+             patch("backend.routes.lineage.analyze_producer") as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 409
+        assert "cannot reach" in resp.json()["detail"]
+        assert "999_other" in resp.json()["detail"]
+        mock_analyze.assert_not_called()
+
+    def test_same_workspace_producer_allowed(self, app_client):
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "111_this"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111_this"), \
+             patch("backend.routes.lineage.analyze_producer",
+                   return_value={"source": "llm", "columns": []}) as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 200
+        mock_analyze.assert_called_once()
+
+    def test_admin_still_gets_cross_workspace_guard(self, admin_client):
+        # Admins skip the recorded-producer 403 but a cross-workspace fetch would
+        # still fail, so the 409 guard applies to them too.
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999_other"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111_this"), \
+             patch("backend.routes.lineage.analyze_producer") as mock_analyze:
+            resp = admin_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 409
+        mock_analyze.assert_not_called()
+
+    def test_missing_workspace_id_fails_open(self, app_client):
+        # Row has no workspace_id → cannot compare → proceed (don't block on gaps).
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": None}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111_this"), \
+             patch("backend.routes.lineage.analyze_producer",
+                   return_value={"source": "llm", "columns": []}) as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 200
+        mock_analyze.assert_called_once()
+
+    def test_unknown_app_workspace_fails_open(self, app_client):
+        # App workspace id unresolved → proceed rather than block.
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999_other"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value=None), \
+             patch("backend.routes.lineage.analyze_producer",
+                   return_value={"source": "llm", "columns": []}) as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 200
+        mock_analyze.assert_called_once()
+
+    def test_cross_workspace_guard_on_column_transformations(self, app_client):
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999_other"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111_this"), \
+             patch("backend.routes.lineage.resolve_column_transformations") as mock_resolve:
+            resp = app_client.post("/api/column-transformations", json={
+                "catalog": "c", "schema_name": "s", "table": "t",
+                "entity_type": "PIPELINE", "entity_id": "8d348b20"})
+        assert resp.status_code == 409
+        mock_resolve.assert_not_called()
+
+
+class TestCrossWorkspacePhase2:
+    """With the live_source_fetch flag ON and a registered, entitled peer, the
+    fetch is ROUTED to the peer workspace instead of 409ing (design §7)."""
+
+    _JOB = {"entity_type": "PIPELINE", "entity_id": "8d348b20", "target_table": "c.s.t"}
+
+    def test_registered_entitled_peer_routes_fetch(self, app_client):
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
+             patch("backend.feature_flags.get_flag_state", return_value=True), \
+             patch("backend.lineage_service.ENFORCE_USER_IDENTITY", True), \
+             patch("backend.federated_workspaces.get_peer", return_value={"workspace_id": "999"}), \
+             patch("backend.federated_workspaces.user_can_access_target_table", return_value=True), \
+             patch("backend.routes.lineage.analyze_producer",
+                   return_value={"source": "llm", "columns": []}) as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 200
+        # the fetch is routed to the producer's home workspace
+        assert mock_analyze.call_args.kwargs.get("source_workspace_id") == "999"
+
+    def test_registered_but_not_entitled_403(self, app_client):
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
+             patch("backend.feature_flags.get_flag_state", return_value=True), \
+             patch("backend.lineage_service.ENFORCE_USER_IDENTITY", True), \
+             patch("backend.federated_workspaces.get_peer", return_value={"workspace_id": "999"}), \
+             patch("backend.federated_workspaces.user_can_access_target_table", return_value=False), \
+             patch("backend.routes.lineage.analyze_producer") as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 403
+        mock_analyze.assert_not_called()
+
+    def test_sp_trust_boundary_when_identity_off(self, app_client):
+        # Accepted SP trust boundary (§7.6): with ENFORCE_USER_IDENTITY off there's
+        # no per-user identity to check, so an authorized app user's fetch proceeds
+        # as the account SP (no per-user entitlement gate) and routes to the peer.
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
+             patch("backend.feature_flags.get_flag_state", return_value=True), \
+             patch("backend.lineage_service.ENFORCE_USER_IDENTITY", False), \
+             patch("backend.federated_workspaces.get_peer", return_value={"workspace_id": "999"}), \
+             patch("backend.federated_workspaces.user_can_access_target_table") as gate, \
+             patch("backend.routes.lineage.analyze_producer",
+                   return_value={"source": "llm", "columns": []}) as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 200
+        assert mock_analyze.call_args.kwargs.get("source_workspace_id") == "999"
+        gate.assert_not_called()  # no per-user check when identity isn't enforced
+
+    def test_flag_on_but_peer_unregistered_still_409(self, app_client):
+        with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999"}]), \
+             patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
+             patch("backend.feature_flags.get_flag_state", return_value=True), \
+             patch("backend.federated_workspaces.get_peer", return_value=None), \
+             patch("backend.routes.lineage.analyze_producer") as mock_analyze:
+            resp = app_client.post("/api/analyze-producer", json=self._JOB)
+        assert resp.status_code == 409
+        mock_analyze.assert_not_called()
 
 
 class TestStoredSourceRedaction:
@@ -319,3 +451,26 @@ class TestLineageExtensions:
     def test_entities_requires_params(self, app_client):
         resp = app_client.get("/api/lineage/entities")
         assert resp.status_code == 422
+
+
+class TestWorkspaceInfo:
+    """GET /api/lineage/workspace-info — workspace id -> friendly name for the
+    cross-workspace graph legend. Fail-open."""
+
+    def test_returns_app_ws_and_peer_names(self, app_client):
+        with patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
+             patch("backend.federated_workspaces.list_peer_workspaces",
+                   return_value=[{"workspace_id": "222", "display_name": "peer-silver-ws"}]):
+            resp = app_client.get("/api/lineage/workspace-info")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["app_workspace_id"] == "111"
+        assert body["names"]["222"] == "peer-silver-ws"
+
+    def test_fails_open_when_peers_unavailable(self, app_client):
+        with patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
+             patch("backend.federated_workspaces.list_peer_workspaces",
+                   side_effect=RuntimeError("no warehouse")):
+            resp = app_client.get("/api/lineage/workspace-info")
+        assert resp.status_code == 200
+        assert resp.json()["names"] == {}

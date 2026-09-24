@@ -104,13 +104,59 @@ class TestFetchPipelineSourceLibraryShapes:
             assert ps._fetch_pipeline_source("pid") == ""
 
 
+class TestFetchNotebookSource:
+    """A NOTEBOOK producer is identified in lineage by numeric object id; the export
+    API needs a path, so the fetcher must resolve id -> path first."""
+
+    def _export_client(self, source_text: str):
+        import base64
+        client = MagicMock()
+        resp = MagicMock()
+        resp.content = base64.b64encode(source_text.encode()).decode()
+        client.workspace.export.return_value = resp
+        return client
+
+    def test_numeric_id_is_resolved_to_path_then_exported(self):
+        from backend.server import producer_source as ps
+        client = self._export_client("df = spark.table('bronze')")
+        with patch("backend.lineage_service._resolve_notebook_path",
+                   return_value="/Users/x/My Notebook") as mock_res, \
+             patch.object(ps, "_source_client", return_value=client):
+            src = ps._fetch_notebook_source("627491938131442")
+        assert "spark.table" in src
+        mock_res.assert_called_once()
+        # export got the resolved PATH, never the numeric id
+        assert client.workspace.export.call_args.kwargs["path"] == "/Users/x/My Notebook"
+
+    def test_path_like_id_skips_resolution(self):
+        from backend.server import producer_source as ps
+        client = self._export_client("SELECT 1")
+        with patch("backend.lineage_service._resolve_notebook_path") as mock_res, \
+             patch.object(ps, "_source_client", return_value=client):
+            src = ps._fetch_notebook_source("/Users/x/nb")
+        assert "SELECT 1" in src
+        mock_res.assert_not_called()
+        assert client.workspace.export.call_args.kwargs["path"] == "/Users/x/nb"
+
+    def test_unresolvable_numeric_id_returns_empty_and_flags_missing(self):
+        from backend.server import producer_source as ps
+        diag = ps._FetchDiag()
+        client = self._export_client("unused")
+        with patch("backend.lineage_service._resolve_notebook_path", return_value=None), \
+             patch.object(ps, "_source_client", return_value=client):
+            src = ps._fetch_notebook_source("627491938131442", diag=diag)
+        assert src == ""
+        assert diag.entity_missing is True
+        client.workspace.export.assert_not_called()
+
+
 class TestAnalyzeProducerReasonCode:
     """analyze_producer returns a structured reason_code when source is unreadable."""
 
     def test_access_denied_reason_code(self):
         from backend.server import producer_source as ps
 
-        def fake_fetch(entity_type, entity_id, diag=None):
+        def fake_fetch(entity_type, entity_id, diag=None, source_workspace_id=None):
             if diag is not None:
                 diag.note_exception("/Workspace/x/nb", RuntimeError("PERMISSION_DENIED"))
             return ""
@@ -270,3 +316,25 @@ class TestCompareProducersRoute:
         assert resp.status_code == 400
         assert "at most" in resp.json()["detail"]
         compare.assert_not_called()
+
+
+class TestSourceClientRouting:
+    """_source_client() returns the app client normally, and a peer client only
+    while a fetch_workspace() context is active."""
+
+    def test_local_by_default(self):
+        import backend.server.producer_source as ps
+        app = MagicMock()
+        with patch.object(ps, "_get_client", return_value=app):
+            assert ps._source_client() is app
+
+    def test_peer_client_inside_fetch_workspace(self):
+        import backend.server.producer_source as ps
+        app, peer = MagicMock(), MagicMock()
+        with patch.object(ps, "_get_client", return_value=app), \
+             patch("backend.federated_workspaces.get_workspace_client", return_value=peer) as gwc:
+            with ps.fetch_workspace("222"):
+                assert ps._source_client() is peer
+            gwc.assert_called_once_with("222")
+            # context restored after the block
+            assert ps._source_client() is app

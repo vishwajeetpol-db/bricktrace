@@ -15,6 +15,7 @@ vi.mock("../../api/client", () => ({
     compareProducers: vi.fn(),
     getColumnTransformationOverview: vi.fn(),
     deepAnalyzeColumnTransformations: vi.fn(),
+    getEntityName: vi.fn(),
   },
 }));
 
@@ -43,6 +44,7 @@ function seedProducers() {
 beforeEach(() => {
   useLineageStore.setState({ nodes: [], edges: [] } as any);
   (api.getAnalyzeModels as any).mockResolvedValue({ models: ["m1"], default: "m1" });
+  (api.getEntityName as any).mockResolvedValue({ name: "some_pipeline" });
   (api.listColumnTransformationVersions as any).mockResolvedValue({ versions: [] });
   (api.resolveColumnTransformations as any).mockResolvedValue({
     source: "plan_capture", source_label: "Captured plan v1", columns: [
@@ -261,6 +263,28 @@ describe("ColumnTransformationPanel", () => {
     // 2 compare selects on the History tab (model dropdown is on the Analyze tab)
     expect(selects.length).toBe(2);
     expect(screen.getByText(/diff/i)).toBeInTheDocument();
+  });
+
+  it("does NOT carry the previous table's producer when the table switches", async () => {
+    // Regression: switching tables used to analyze the new table with the OLD
+    // producer (the resolve on table-change closed over the stale entityId).
+    // T1 resolves to an analysis from producer JOB:a, which the panel adopts.
+    (api.resolveColumnTransformations as any).mockResolvedValue({
+      source: "stored", source_label: "Stored", entity_type: "JOB", entity_id: "a",
+      columns: [{ target_column: "x", source_columns: ["y"], expression: "y" }], version: 1,
+    });
+    const { rerender } = render(<ColumnTransformationPanel table="cat.s.t1" />);
+    await waitFor(() => expect(api.resolveColumnTransformations).toHaveBeenCalled());
+    (api.resolveColumnTransformations as any).mockClear();
+
+    // Switch to a different table.
+    rerender(<ColumnTransformationPanel table="cat.s.t2" />);
+    await waitFor(() => expect(api.resolveColumnTransformations).toHaveBeenCalled());
+
+    // The resolve for the NEW table must target t2 with NO stale producer.
+    const call = (api.resolveColumnTransformations as any).mock.calls.at(-1)[0];
+    expect(call.table).toBe("t2");
+    expect(call.entity_id === "" || call.entity_id == null).toBe(true);
   });
 
   it("re-analyzes with the LLM when a producer is entered", async () => {

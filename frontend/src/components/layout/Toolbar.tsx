@@ -142,8 +142,8 @@ function Toolbar({ onGenerate }: Props) {
           <img src="/bricktrace-logo.png" alt="" className="w-full h-full object-contain" />
         </span>
         <div className="text-left">
-          <div className="font-semibold text-[14px] text-white tracking-tight leading-none">
-            BrickTrace
+          <div className="font-bold text-[14px] tracking-tight leading-none">
+            <span className="text-slate-100">Brick</span><span className="text-[#FF4520]">Trace</span>
           </div>
           <div className="text-[9px] text-slate-600 tracking-wider uppercase mt-0.5">
             Unity Catalog

@@ -303,6 +303,9 @@ export default function ColumnTransformationPanel({ table }: { table: string | n
   // A specific version being viewed from the history list (null = showing the resolved/current result).
   const [viewingVersion, setViewingVersion] = useState<TransformVersionDetail | null>(null);
   const [viewLoading, setViewLoading] = useState<string | null>(null);
+  // The producer's friendly name, fetched when the graph node didn't carry one
+  // (display_name is lazily resolved), so the panel shows the pipeline by name.
+  const [producerDisplayName, setProducerDisplayName] = useState<string | null>(null);
 
   // Multi-producer comparison (only when the table has 2+ producers).
   const [producerCmp, setProducerCmp] = useState<ProducerCompare | null>(null);
@@ -388,7 +391,7 @@ export default function ColumnTransformationPanel({ table }: { table: string | n
       // If the resolver surfaced an existing analysis for one of this table's
       // producers (no producer was explicitly picked), adopt it so the Analyze
       // tab pre-selects that producer and Re-analyze / Deep analysis target it.
-      if (r.entity_type && r.entity_id && !opts?.eid && !entityId) {
+      if (r.entity_type && r.entity_id && !opts?.eid) {
         setEntityType(r.entity_type);
         setEntityId(r.entity_id);
       }
@@ -401,9 +404,13 @@ export default function ColumnTransformationPanel({ table }: { table: string | n
     } finally { setLoading(false); }
   }, [table, entityType, entityId, model, loadVersions]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { setData(null); setError(null); setEntityId(""); setCompareData(null); setAllVersions([]); setViewingVersion(null); setProducerCmp(null); setActiveTab("columns"); setColumnFilter(""); setShowLegend(false); setOverviewOpen(false); setDeepLog([]); setDeepOutcome(null); setDeepRunning(false); }, [table]);
-  // Kick off an initial resolve (captured plan / stored) whenever the table changes.
-  useEffect(() => { if (parts) resolve(); }, [table]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setData(null); setError(null); setEntityId(""); setEntityType("PIPELINE"); setCompareData(null); setAllVersions([]); setViewingVersion(null); setProducerCmp(null); setActiveTab("columns"); setColumnFilter(""); setShowLegend(false); setOverviewOpen(false); setDeepLog([]); setDeepOutcome(null); setDeepRunning(false); }, [table]);
+  // Kick off an initial resolve whenever the table changes. Pass an EXPLICIT empty
+  // producer: a `resolve()` here would close over the PREVIOUS table's entityId
+  // (state reset above hasn't applied yet in this render), and analyze the new
+  // table with the old producer — which is a different table's pipeline. The
+  // resolver picks the right producer for the new table (adopted above).
+  useEffect(() => { if (parts) resolve({ et: "", eid: "" }); }, [table]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pickProducer = (et: string, eid: string) => {
     setEntityType(et); setEntityId(eid);
@@ -489,9 +496,23 @@ export default function ColumnTransformationPanel({ table }: { table: string | n
   // across producers on open).
   const producerName = isLLM && data && data.entity_id
     ? (producerNodes.find((n) => n.entity_id === data.entity_id)?.display_name
+        || producerDisplayName
         || data.producer_label
         || `${data.entity_type || ""} ${data.entity_id}`.trim())
     : null;
+
+  // Resolve the producer's friendly name when neither the graph node nor the
+  // resolver supplied one, so we don't show a bare TYPE+id.
+  useEffect(() => {
+    setProducerDisplayName(null);
+    if (!isLLM || !data?.entity_id) return;
+    if (producerNodes.find((n) => n.entity_id === data.entity_id)?.display_name) return;
+    let cancelled = false;
+    api.getEntityName(data.entity_type || "", data.entity_id)
+      .then((r) => { if (!cancelled && r?.name) setProducerDisplayName(r.name); })
+      .catch(() => { /* fall back to the id */ });
+    return () => { cancelled = true; };
+  }, [isLLM, data?.entity_id, data?.entity_type]); // eslint-disable-line react-hooks/exhaustive-deps
   // Show the reason text when unavailable for a reason other than access-denied
   // (access-denied has its own richer notice).
   const showUnavailDetail = src === "unavailable" && data?.reason_code !== "access_denied" && !!data?.detail;
@@ -541,10 +562,10 @@ export default function ColumnTransformationPanel({ table }: { table: string | n
             </button>
           </div>
           {producerName && (
-            <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-slate-400">
-              <GitFork size={10} className="text-violet-400 shrink-0 rotate-90" />
+            <div className="flex items-start gap-1.5 mt-1.5 text-[10px] text-slate-400 flex-wrap">
+              <GitFork size={10} className="text-violet-400 shrink-0 rotate-90 mt-[1px]" />
               <span className="shrink-0 text-slate-500">Producer:</span>
-              <span className="font-mono text-violet-300 truncate" title={`${data?.entity_type || ""} ${data?.entity_id || ""}`}>{producerName}</span>
+              <span className="font-mono text-violet-300 break-all" title={`${data?.entity_type || ""} ${data?.entity_id || ""}`}>{producerName}</span>
               {hasProducers && (
                 <span className="shrink-0 text-slate-600">· latest of {producerNodes.length} — compare in Producers tab</span>
               )}

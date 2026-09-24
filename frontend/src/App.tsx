@@ -19,6 +19,7 @@ import { StreamingTopologyPanel } from "./components/StreamingTopologyPanel";
 import CatalogListView from "./components/browse/CatalogListView";
 import SchemaListView from "./components/browse/SchemaListView";
 import TableListView from "./components/browse/TableListView";
+import PageShell from "./components/browse/PageShell";
 import { useLineageStore } from "./store/lineageStore";
 import { api, setLiveMode } from "./api/client";
 import { useRouter, goLineage, goLanding } from "./hooks/useRouter";
@@ -240,59 +241,80 @@ export default function App() {
 
   if (route.view === "dq") {
     return (
-      <div className="h-screen w-screen bg-surface overflow-auto">
-        <DQMetricsPanel tableFqn={route.table} />
-      </div>
+      <>
+        <PageShell subtitle="Column-level data quality metrics" bare>
+          <DQMetricsPanel tableFqn={route.table} />
+        </PageShell>
+        <GlobalSearch onSelectTable={handleSelectTable} />
+      </>
     );
   }
 
   if (route.view === "glossary") {
     return (
-      <div className="h-screen w-screen bg-surface overflow-auto">
-        <GlossaryPanel />
-      </div>
+      <>
+        <PageShell subtitle="Business glossary" bare>
+          <GlossaryPanel />
+        </PageShell>
+        <GlobalSearch onSelectTable={handleSelectTable} />
+      </>
     );
   }
 
   if (route.view === "notifications") {
     return (
-      <div className="h-screen w-screen bg-surface overflow-auto">
-        <NotificationsPanel />
-      </div>
+      <>
+        <PageShell subtitle="Recent activity & alerts" bare>
+          <NotificationsPanel />
+        </PageShell>
+        <GlobalSearch onSelectTable={handleSelectTable} />
+      </>
     );
   }
 
   if (route.view === "export") {
     return (
-      <div className="h-screen w-screen bg-surface overflow-auto">
-        {/* catalog/schema are required — the capture endpoint rejects an empty
-            scope, so mounting without them made "Capture Now" always 400. */}
-        <ExportPanel catalog={catalog} schema={schema} />
-      </div>
+      <>
+        <PageShell subtitle="OpenLineage export & interop" bare>
+          {/* catalog/schema are required — the capture endpoint rejects an empty
+              scope, so mounting without them made "Capture Now" always 400. */}
+          <ExportPanel catalog={catalog} schema={schema} />
+        </PageShell>
+        <GlobalSearch onSelectTable={handleSelectTable} />
+      </>
     );
   }
 
   if (route.view === "rootCause") {
     return (
-      <div className="h-screen w-screen bg-surface overflow-auto">
-        <RootCauseWizard />
-      </div>
+      <>
+        <PageShell subtitle="Root-cause analysis" bare>
+          <RootCauseWizard />
+        </PageShell>
+        <GlobalSearch onSelectTable={handleSelectTable} />
+      </>
     );
   }
 
   if (route.view === "biConsumers") {
     return (
-      <div className="h-screen w-screen bg-surface overflow-auto">
-        <BiConsumersPanel />
-      </div>
+      <>
+        <PageShell subtitle="BI & dashboard consumers" bare>
+          <BiConsumersPanel />
+        </PageShell>
+        <GlobalSearch onSelectTable={handleSelectTable} />
+      </>
     );
   }
 
   if (route.view === "streaming") {
     return (
-      <div className="h-screen w-screen bg-surface overflow-auto">
-        <StreamingTopologyPanel />
-      </div>
+      <>
+        <PageShell subtitle="Streaming topology" bare>
+          <StreamingTopologyPanel />
+        </PageShell>
+        <GlobalSearch onSelectTable={handleSelectTable} />
+      </>
     );
   }
 

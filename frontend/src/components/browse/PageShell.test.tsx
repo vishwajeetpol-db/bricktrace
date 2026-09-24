@@ -30,7 +30,9 @@ describe("PageShell", () => {
   it("renders children and brand", () => {
     render(<PageShell><div>content here</div></PageShell>);
     expect(screen.getByText("content here")).toBeInTheDocument();
-    expect(screen.getByText("BrickTrace")).toBeInTheDocument();
+    // Two-color wordmark: "Brick" + "Trace" in separate spans.
+    expect(screen.getByText("Brick")).toBeInTheDocument();
+    expect(screen.getByText("Trace")).toBeInTheDocument();
   });
 
   it("opens global search on button click", async () => {
@@ -38,5 +40,20 @@ describe("PageShell", () => {
     render(<PageShell><div>x</div></PageShell>);
     await user.click(screen.getByText("Search any table..."));
     expect(useLineageStore.getState().globalSearchOpen).toBe(true);
+  });
+
+  it("renders a custom subtitle", () => {
+    render(<PageShell subtitle="Data quality metrics"><div>x</div></PageShell>);
+    expect(screen.getByText("Data quality metrics")).toBeInTheDocument();
+  });
+
+  it("renders the brand logo image", () => {
+    const { container } = render(<PageShell><div>x</div></PageShell>);
+    expect(container.querySelector('img[src="/bricktrace-logo.png"]')).toBeTruthy();
+  });
+
+  it("renders children in bare mode", () => {
+    render(<PageShell bare><div>bare content</div></PageShell>);
+    expect(screen.getByText("bare content")).toBeInTheDocument();
   });
 });

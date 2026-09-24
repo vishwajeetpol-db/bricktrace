@@ -300,3 +300,46 @@ class TestRequireAdmin:
     def test_admin_with_no_email_returns_empty_string(self):
         with patch("backend.main._get_user_info", return_value=(None, True)):
             assert require_admin(MagicMock()) == ""
+
+
+class TestAssertDatabricksWorkspaceUrl:
+    """Peer-registry host validator (Phase 2): https + no creds + a Databricks
+    workspace domain, WITHOUT the private-IP rejection (a real workspace reached
+    from inside the cloud legitimately resolves to a private address)."""
+
+    def test_accepts_azure_workspace(self):
+        from backend.validators import assert_databricks_workspace_url
+        u = "https://adb-7405616972951593.13.azuredatabricks.net"
+        assert assert_databricks_workspace_url(u) == u
+
+    def test_accepts_aws_and_gcp(self):
+        from backend.validators import assert_databricks_workspace_url
+        for u in ("https://foo.cloud.databricks.com", "https://bar.7.gcp.databricks.com"):
+            assert assert_databricks_workspace_url(u) == u
+
+    def test_rejects_non_databricks_domain(self):
+        from backend.validators import assert_databricks_workspace_url, UnsafeOutboundURL
+        with pytest.raises(UnsafeOutboundURL):
+            assert_databricks_workspace_url("https://evil.example.com")
+
+    def test_rejects_http_and_embedded_creds(self):
+        from backend.validators import assert_databricks_workspace_url, UnsafeOutboundURL
+        with pytest.raises(UnsafeOutboundURL):
+            assert_databricks_workspace_url("http://foo.azuredatabricks.net")
+        with pytest.raises(UnsafeOutboundURL):
+            assert_databricks_workspace_url("https://u:p@foo.azuredatabricks.net")
+
+    def test_does_not_reject_private_resolving_workspace(self):
+        # The key difference from assert_safe_outbound_url: no DNS/private-IP check,
+        # so a workspace that resolves privately is still accepted (domain is the anchor).
+        from backend.validators import assert_databricks_workspace_url
+        u = "https://adb-1.2.azuredatabricks.net"  # may resolve to a private IP or not at all
+        assert assert_databricks_workspace_url(u) == u
+
+
+class TestAssertDatabricksWorkspaceUrlEdges:
+    def test_rejects_empty_none_and_hostless(self):
+        from backend.validators import assert_databricks_workspace_url, UnsafeOutboundURL
+        for bad in ["", None, "https://", "not a url"]:
+            with pytest.raises(UnsafeOutboundURL):
+                assert_databricks_workspace_url(bad)

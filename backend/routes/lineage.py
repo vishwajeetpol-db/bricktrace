@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from databricks.sdk.service.sql import StatementState
-from backend.lineage_service import _get_client, LINEAGE_WINDOW_DAYS
+from backend.lineage_service import _get_client, _app_workspace_id, LINEAGE_WINDOW_DAYS
 from backend.server.entities import resolve_entity, resolve_entities
 from backend.server.producer_source import (
     analyze_producer,
@@ -71,27 +71,30 @@ def _validate(value: str, name: str) -> str:
     return v
 
 
-def _assert_producer_of(entity_type: str, entity_id: str, target_table: str) -> None:
-    """Reject a (producer, target) pair that Unity Catalog never recorded.
+def _assert_producer_of(entity_type: str, entity_id: str, target_table: str,
+                        enforce_authz: bool = True) -> Optional[str]:
+    """Authorize a (producer, target) pair and return the producer's workspace_id.
 
-    Without this, every endpoint that resolves a producer's source is a confused
-    deputy: `entity_id` is free-form (`_ENTITY_ID_RE` permits `/`, `.` and `@`, so
-    it accepts any workspace path) and the fetch runs as the APP service
-    principal, whose read scope is deliberately broader than any one caller's.
-    A caller could therefore aim the fetch at an unrelated notebook or job —
-    `/Users/someone-else/private` — and have its source stored, returned, or
-    summarised back to them.
+    Without this check, every endpoint that resolves a producer's source is a
+    confused deputy: `entity_id` is free-form (`_ENTITY_ID_RE` permits `/`, `.`
+    and `@`, so it accepts any workspace path) and the fetch runs as the APP
+    service principal, whose read scope is deliberately broader than any one
+    caller's. A caller could therefore aim the fetch at an unrelated notebook or
+    job — `/Users/someone-else/private` — and have its source stored, returned,
+    or summarised back to them. Constraining the pair to producers UC actually
+    recorded for `target_table` removes that arbitrary-target primitive. Fails
+    CLOSED: if the lineage lookup can't run we refuse rather than trust the caller.
 
-    Constraining the pair to producers UC actually recorded for `target_table`
-    keeps the feature working for real lineage while removing the
-    arbitrary-target primitive. Fails CLOSED: if the lineage lookup can't be
-    performed we refuse rather than fall back to trusting the caller.
+    Returns the recorded producer's `workspace_id` (str, or None when unknown) so
+    the caller can decide local-vs-cross-workspace fetch via
+    `_resolve_fetch_workspace`. `enforce_authz=False` (admins) skips the
+    recorded-producer 403 but still returns the workspace_id.
     """
     et = (entity_type or "").strip().upper()
     eid = (entity_id or "").strip()
     try:
         rows = _execute_sql(
-            f"SELECT 1 AS ok FROM system.access.table_lineage "
+            f"SELECT workspace_id FROM system.access.table_lineage "
             f"WHERE target_table_full_name = '{sql_str(target_table)}' "
             f"  AND upper(entity_type) = '{sql_str(et)}' "
             f"  AND entity_id = '{sql_str(eid)}' "
@@ -100,7 +103,7 @@ def _assert_producer_of(entity_type: str, entity_id: str, target_table: str) -> 
             # `current_date() - INTERVAL N DAYS`, so at the window edge the guard
             # could reject an edge the graph had just drawn.
             f"  AND event_time > current_date() - INTERVAL {LINEAGE_LOOKBACK_DAYS} DAYS "
-            f"LIMIT 1"
+            f"ORDER BY event_time DESC LIMIT 1"
         )
     except Exception as e:
         logger.warning(f"producer authorization check failed for {et}:{eid} -> {target_table}: {e}")
@@ -110,11 +113,64 @@ def _assert_producer_of(entity_type: str, entity_id: str, target_table: str) -> 
                    "The app needs SELECT on system.access.table_lineage.",
         )
     if not rows:
+        if enforce_authz:
+            raise HTTPException(
+                status_code=403,
+                detail=f"{et} {eid} is not a recorded producer of {target_table} "
+                       f"within the last {LINEAGE_LOOKBACK_DAYS} days.",
+            )
+        return None  # admin, no recorded row → no workspace to resolve
+    ws = rows[0].get("workspace_id")
+    return str(ws) if ws is not None else None
+
+
+def _resolve_fetch_workspace(producer_ws: Optional[str], entity_type: str, entity_id: str,
+                             target_table: str) -> Optional[str]:
+    """Decide which workspace to fetch a producer's source from.
+
+    Returns None to fetch locally (producer is in the app's own workspace, or the
+    workspace is unknown — fail open). For a cross-workspace producer:
+      - Phase 0 behavior when live_source_fetch is OFF or no peer is registered:
+        raise the honest 409 (lineage spans workspaces; source fetch does not).
+      - Phase 2: with the flag on AND a registered peer, run the per-user
+        entitlement precheck (§7.6) — the fetch runs as the account SP, so the
+        REQUESTING user must be able to access the TARGET table themselves — then
+        return the peer workspace_id so the fetch is routed there. Fails closed (403).
+    """
+    producer_ws = str(producer_ws) if producer_ws else None
+    app_ws = _app_workspace_id()
+    if not producer_ws or not app_ws or producer_ws == app_ws:
+        return None  # local (or unknown → fail open to the local path)
+
+    from backend.federated_workspaces import get_peer, user_can_access_target_table, FLAG
+    from backend.feature_flags import get_flag_state
+
+    honest_409 = HTTPException(
+        status_code=409,
+        detail=(
+            f"{entity_type} {entity_id} runs in workspace {producer_ws}, which this app "
+            f"(workspace {app_ws}) cannot reach. The lineage graph spans workspaces, but "
+            f"reading this producer's source across workspaces isn't available "
+            f"(enable '{FLAG}' and register the peer workspace — see FEDERATED_LINEAGE_DESIGN §7)."
+        ),
+    )
+    if not get_flag_state(FLAG) or not get_peer(producer_ws):
+        raise honest_409
+    # Entitlement model (design §7.6). The per-user gate only means something when
+    # reads run as the user, i.e. ENFORCE_USER_IDENTITY is on — then verify the
+    # requesting user can access the target table themselves. When it's off, the
+    # deployment has accepted the SP trust boundary: any authorized app user may
+    # trigger the fetch as the account SP (there is no per-user identity to check).
+    from backend.lineage_service import ENFORCE_USER_IDENTITY
+    if ENFORCE_USER_IDENTITY and not user_can_access_target_table(target_table):
         raise HTTPException(
             status_code=403,
-            detail=f"{et} {eid} is not a recorded producer of {target_table} "
-                   f"within the last {LINEAGE_LOOKBACK_DAYS} days.",
+            detail=(
+                f"You don't have access to {target_table}, so the source of its "
+                f"cross-workspace producer can't be fetched on your behalf."
+            ),
         )
+    return producer_ws
 
 
 def _assert_producers_of(pairs: list[dict], target_table: str) -> None:
@@ -377,6 +433,27 @@ async def lineage_freshness(
         raise HTTPException(status_code=500, detail="Failed to lineage freshness.")
 
 
+@router.get("/workspace-info")
+async def lineage_workspace_info():
+    """Workspace id → friendly name for the graph's cross-workspace legend.
+
+    Names come from the admin-curated federated peer registry (its display_name);
+    the app's own workspace id is returned so the UI can label it 'This workspace'.
+    Fail-open: an empty names map just means the legend shows raw ids.
+    """
+    names: dict[str, str] = {}
+    try:
+        from backend.federated_workspaces import list_peer_workspaces
+        for p in await asyncio.to_thread(list_peer_workspaces):
+            wid = str(p.get("workspace_id") or "").strip()
+            nm = (p.get("display_name") or "").strip()
+            if wid and nm:
+                names[wid] = nm
+    except Exception:
+        logger.info("lineage: workspace-info peer names unavailable (non-fatal)")
+    return {"app_workspace_id": _app_workspace_id(), "names": names}
+
+
 # ---------------------------------------------------------------------------
 # Capability 27 / 28 — Analyze producer (LLM Approach A)
 # ---------------------------------------------------------------------------
@@ -407,9 +484,10 @@ async def analyze_producer_endpoint(request: Request, body: AnalyzeProducerIn):
     from backend.main import _get_user_info
     email, is_admin = _get_user_info(request)
     # The source fetch runs as the app SP, so the caller must not be able to
-    # nominate an arbitrary workspace object as the "producer".
-    if not is_admin:
-        await asyncio.to_thread(_assert_producer_of, et, eid, body.target_table)
+    # nominate an arbitrary workspace object as the "producer". Admins skip the
+    # recorded-producer authz but still get the cross-workspace guard.
+    producer_ws = await asyncio.to_thread(_assert_producer_of, et, eid, body.target_table, not is_admin)
+    fetch_ws = await asyncio.to_thread(_resolve_fetch_workspace, producer_ws, et, eid, body.target_table)
     try:
         return analyze_producer(
             entity_type=et,
@@ -419,6 +497,7 @@ async def analyze_producer_endpoint(request: Request, body: AnalyzeProducerIn):
             force_rerun=body.force_rerun,
             target_columns=body.target_columns,
             model=body.model,
+            source_workspace_id=fetch_ws,
         )
     except HTTPException:
         raise
@@ -466,8 +545,10 @@ async def column_transformations(request: Request, body: ColumnTransformIn):
         raise HTTPException(status_code=400, detail="Invalid entity_id")
     from backend.main import _get_user_info
     email, is_admin = _get_user_info(request)
-    if et and eid and not is_admin:
-        await asyncio.to_thread(_assert_producer_of, et, eid, f"{c}.{s}.{t}")
+    fetch_ws = None
+    if et and eid:
+        producer_ws = await asyncio.to_thread(_assert_producer_of, et, eid, f"{c}.{s}.{t}", not is_admin)
+        fetch_ws = await asyncio.to_thread(_resolve_fetch_workspace, producer_ws, et, eid, f"{c}.{s}.{t}")
     try:
         return resolve_column_transformations(
             catalog=c, schema=s, table=t,
@@ -475,6 +556,7 @@ async def column_transformations(request: Request, body: ColumnTransformIn):
             actor=email or "unknown",
             force_rerun=body.force_rerun,
             model=body.model,
+            source_workspace_id=fetch_ws,
         )
     except HTTPException:
         raise
@@ -507,8 +589,8 @@ async def column_transformation_overview(request: Request, body: CTOverviewIn):
         raise HTTPException(status_code=400, detail="Invalid entity_id")
     from backend.main import _get_user_info
     email, is_admin = _get_user_info(request)
-    if et and eid and not is_admin:
-        await asyncio.to_thread(_assert_producer_of, et, eid, f"{c}.{s}.{t}")
+    if et and eid:
+        await asyncio.to_thread(_assert_producer_of, et, eid, f"{c}.{s}.{t}", not is_admin)
     try:
         return overview_column_transformations(
             catalog=c, schema=s, table=t, entity_type=et, entity_id=eid,
@@ -579,12 +661,14 @@ async def column_transformation_deep_analyze(request: Request, body: CTDeepAnaly
     full = f"{c}.{s}.{t}"
     # Reads the producer's source AND queries config tables as the app SP —
     # verify the producer actually writes this table before either happens.
-    if not is_admin:
-        await asyncio.to_thread(_assert_producer_of, et, eid, full)
+    # Admins skip the recorded-producer authz but still get the cross-workspace guard.
+    producer_ws = await asyncio.to_thread(_assert_producer_of, et, eid, full, not is_admin)
+    fetch_ws = await asyncio.to_thread(_resolve_fetch_workspace, producer_ws, et, eid, full)
 
     def gen():
         try:
-            for ev in deep_analyze_stream(et, eid, full, actor=email or "unknown", model=body.model):
+            for ev in deep_analyze_stream(et, eid, full, actor=email or "unknown",
+                                          model=body.model, source_workspace_id=fetch_ws):
                 yield json.dumps(ev) + "\n"
         except Exception as e:  # never break the stream mid-flight
             yield json.dumps({"type": "error", "message": str(e)}) + "\n"

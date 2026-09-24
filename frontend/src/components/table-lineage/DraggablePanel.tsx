@@ -105,7 +105,7 @@ export default function DraggablePanel({
         </div>
       </div>
       {subtitle && (
-        <div className="px-3.5 pt-2 font-mono text-[10px] text-slate-500 truncate">{subtitle}</div>
+        <div className="px-3.5 pt-2 font-mono text-[10px] text-slate-500 break-all leading-snug" title={subtitle}>{subtitle}</div>
       )}
       {/* Body */}
       <div className="flex-1 overflow-y-auto p-3.5">{children}</div>
