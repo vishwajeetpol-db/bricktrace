@@ -19,6 +19,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { RotateCcw, Code2, Briefcase, Lightbulb } from "lucide-react";
 import { useLineageStore } from "../../store/lineageStore";
 import { isHiddenInBusinessView, businessNodeLabel, businessNodeType } from "../../lib/businessView";
+import { assignWorkspaceColors } from "../../lib/workspaceColors";
 import LineageExplainModal from "./LineageExplainModal";
 import { api } from "../../api/client";
 import { layoutGraph } from "../../lib/elkLayout";
@@ -362,6 +363,11 @@ function LineageCanvas() {
     };
   }, [viewNodes, viewEdges, sharingEnabled, sharingOverlay]);
 
+  // Colour-code producer (entity) nodes by workspace when the graph spans more
+  // than one — empty map (single workspace) means no indicator. Tables are
+  // metastore-wide so they don't participate.
+  const workspaceColors = useMemo(() => assignWorkspaceColors(augNodes as any[]), [augNodes]);
+
   const [flowNodes, setFlowNodes] = useState<Node[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
   const [tooltipData, setTooltipData] = useState<{
@@ -596,6 +602,9 @@ function LineageCanvas() {
         isHighlighted: true,
         isDimmed: false,
         ...(n.node_type === "table" ? { sharingBadge: badgeByTable.get(n.id) } : {}),
+        ...(n.node_type === "entity" && n.workspace_id
+          ? { workspaceColor: workspaceColors.get(String(n.workspace_id)) }
+          : {}),
       },
     }));
 
@@ -682,7 +691,7 @@ function LineageCanvas() {
     // expandedNodes is intentionally NOT in the dependency array.
     // Expand/collapse is handled by a separate effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [augNodes, augEdges, badgeByTable, reactFlowInstance, layoutKey]);
+  }, [augNodes, augEdges, badgeByTable, workspaceColors, reactFlowInstance, layoutKey]);
 
   // =========================================================================
   // EXPAND/COLLAPSE EFFECT — updates node data in place without re-running ELK.
@@ -989,6 +998,30 @@ function LineageCanvas() {
           style={{ width: 160, height: 100 }}
         />
       </ReactFlow>
+
+      {/* Workspace legend — only shown when the graph spans >1 workspace. Marks
+          which producer (pipeline/job/notebook) ran in which workspace, since
+          metastore-wide lineage can cross workspaces. */}
+      {workspaceColors.size > 0 && (
+        <div className="absolute top-3 right-3 z-20 rounded-lg bg-surface-100/90 backdrop-blur-md border border-white/[0.06] px-3 py-2 shadow-[0_2px_12px_rgba(0,0,0,0.3)] max-w-[240px]">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+            Workspaces
+          </div>
+          <div className="flex flex-col gap-1">
+            {[...workspaceColors.entries()].map(([wsId, color]) => (
+              <div key={wsId} className="flex items-center gap-2">
+                <span
+                  className="w-2.5 h-2.5 rounded-[3px] flex-shrink-0 ring-1 ring-white/25"
+                  style={{ backgroundColor: color }}
+                />
+                <span className="font-mono text-[10px] text-slate-300 truncate" title={wsId}>
+                  {wsId}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Technical ⇄ Business view controls — flip into a plain-language lens for
           non-engineers, choose how much to show, and explain the graph with AI. */}

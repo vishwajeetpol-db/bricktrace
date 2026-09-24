@@ -17,6 +17,10 @@ type EntityNodeData = {
   last_run: string | null;
   owner: string | null;
   cost_usd: number | null;
+  workspace_id?: string | null;
+  // Set by LineageCanvas only when the graph spans >1 workspace — the colour for
+  // this node's workspace. Absent (single-workspace graph) means no indicator.
+  workspaceColor?: string;
   isRevealed?: boolean;
   isDimmed?: boolean;
   isHighlighted?: boolean;
@@ -288,6 +292,16 @@ function EntityNodeComponent({ data }: NodeProps<EntityNodeData>) {
       >
         <div className="flex items-center gap-2.5">
           <div className={`w-1.5 h-1.5 rounded-full ${dotColor} shadow-[0_0_6px] ${dotShadow} flex-shrink-0`} />
+          {/* Workspace grouping marker — a square (vs the round status dot) that
+              only appears when the graph spans multiple workspaces. */}
+          {data.workspaceColor && (
+            <span
+              title={`Workspace ${data.workspace_id}`}
+              aria-label={`Workspace ${data.workspace_id}`}
+              className="w-2 h-2 rounded-[3px] flex-shrink-0 ring-1 ring-white/25"
+              style={{ backgroundColor: data.workspaceColor }}
+            />
+          )}
           <Icon size={13} className={`${iconColor} flex-shrink-0 opacity-70`} />
           <span className={`${businessView ? "font-sans" : "font-mono"} font-medium text-[11px] text-slate-300 truncate max-w-[140px]`}>
             {label}

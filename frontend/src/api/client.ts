@@ -43,6 +43,9 @@ export interface EntityNode {
   last_run: string | null;
   owner: string | null;
   cost_usd: number | null;
+  // Workspace that emitted this producer's lineage event. Populated across
+  // workspaces (metastore-wide lineage); null when the lineage row carried none.
+  workspace_id?: string | null;
 }
 
 export type GraphNode = TableNode | EntityNode;
