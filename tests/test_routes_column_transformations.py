@@ -318,19 +318,22 @@ class TestCrossWorkspacePhase2:
         assert resp.status_code == 403
         mock_analyze.assert_not_called()
 
-    def test_denied_when_identity_enforcement_off(self, app_client):
-        # The per-user gate can't run without ENFORCE_USER_IDENTITY, so the whole
-        # cross-workspace fetch is refused (clear 409, not a misleading 403).
+    def test_sp_trust_boundary_when_identity_off(self, app_client):
+        # Accepted SP trust boundary (§7.6): with ENFORCE_USER_IDENTITY off there's
+        # no per-user identity to check, so an authorized app user's fetch proceeds
+        # as the account SP (no per-user entitlement gate) and routes to the peer.
         with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999"}]), \
              patch("backend.routes.lineage._app_workspace_id", return_value="111"), \
              patch("backend.feature_flags.get_flag_state", return_value=True), \
              patch("backend.lineage_service.ENFORCE_USER_IDENTITY", False), \
              patch("backend.federated_workspaces.get_peer", return_value={"workspace_id": "999"}), \
-             patch("backend.routes.lineage.analyze_producer") as mock_analyze:
+             patch("backend.federated_workspaces.user_can_access_target_table") as gate, \
+             patch("backend.routes.lineage.analyze_producer",
+                   return_value={"source": "llm", "columns": []}) as mock_analyze:
             resp = app_client.post("/api/analyze-producer", json=self._JOB)
-        assert resp.status_code == 409
-        assert "ENFORCE_USER_IDENTITY" in resp.json()["detail"]
-        mock_analyze.assert_not_called()
+        assert resp.status_code == 200
+        assert mock_analyze.call_args.kwargs.get("source_workspace_id") == "999"
+        gate.assert_not_called()  # no per-user check when identity isn't enforced
 
     def test_flag_on_but_peer_unregistered_still_409(self, app_client):
         with patch("backend.routes.lineage._execute_sql", return_value=[{"workspace_id": "999"}]), \

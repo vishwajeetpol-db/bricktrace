@@ -146,15 +146,17 @@ FLAG_DEFINITIONS: list[dict] = [
             "from the workspace where it actually runs, when that differs from this app's workspace. "
             "Uses an admin-registered peer workspace (federated_workspaces table) reached via an "
             "account service principal (OAuth M2M); the host is SSRF-validated and secrets are read "
-            "from a secret scope (never stored in the registry). Before fetching, the requesting user "
-            "is entitlement-checked against the object in the peer (fails closed). When off — or no "
-            "peer is registered — a cross-workspace producer returns the honest 409 from Phase 0 and "
-            "the analysis degrades to captured plans / config tables. See docs/FEDERATED_LINEAGE_DESIGN.md §7."
+            "from a secret scope (never stored in the registry). Entitlement (§7.6): when "
+            "ENFORCE_USER_IDENTITY is on, the requesting user is checked against the TARGET table "
+            "(fails closed); when it's off, the account SP fetches on behalf of any authorized app "
+            "user (accepted trust boundary). When this flag is off — or no peer is registered — a "
+            "cross-workspace producer returns the honest 409 from Phase 0 and analysis degrades to "
+            "captured plans / config tables. See docs/FEDERATED_LINEAGE_DESIGN.md §7."
         ),
         "cost": "low",
         "risk": "high",
         "side_effects": [
-            "The account SP reads producer source in a PEER workspace on behalf of an authorized, entitlement-checked user — a real cross-workspace data path; review §7.6 before enabling.",
+            "The account SP reads producer source in a PEER workspace — a real cross-workspace data path. With ENFORCE_USER_IDENTITY on it's gated per requesting user; with it off any authorized app user can trigger it (SP trust boundary). Review §7.6 before enabling.",
             "Requires an account SP added as a member of each peer workspace with CAN_VIEW on the producer objects, plus its OAuth secret in a scope the app SP can read.",
             "No effect until a peer workspace is registered AND the flag is on; otherwise cross-workspace producers keep returning the honest 409.",
         ],
