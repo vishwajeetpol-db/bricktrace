@@ -128,7 +128,7 @@ export function GlossaryPanel() {
         <h2 className="text-2xl font-bold text-white">Business Glossary</h2>
         <button
           onClick={() => setShowForm(!showForm)}
-          className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+          className="px-4 py-2 bg-accent text-white rounded-lg hover:bg-accent-dark transition-colors"
         >
           {showForm ? 'Cancel' : '+ Add Term'}
         </button>
@@ -141,7 +141,7 @@ export function GlossaryPanel() {
             key={tab}
             onClick={() => setActiveTab(tab)}
             className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-              activeTab === tab ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'
+              activeTab === tab ? 'bg-accent text-white' : 'text-gray-400 hover:text-white'
             }`}
           >
             {tab === 'terms' ? 'Terms' : tab === 'domains' ? 'Domains' : 'KPIs'}

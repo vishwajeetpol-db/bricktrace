@@ -71,10 +71,10 @@ function ControlPanel({ open, onClose }: Props) {
     <div className="h-screen w-screen flex bg-surface overflow-hidden">
       <SideNav />
       <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-6 h-[68px] shrink-0 border-b border-violet-500/10">
+        <div className="flex items-center justify-between px-6 h-[68px] shrink-0 border-b border-white/[0.06]">
           <div className="flex items-center gap-3">
-            <SlidersHorizontal size={16} className="text-violet-400" />
-            <span className="font-semibold text-[15px] text-violet-100 tracking-tight">Control Panel</span>
+            <SlidersHorizontal size={16} className="text-accent" />
+            <span className="font-semibold text-[15px] text-slate-100 tracking-tight">Control Panel</span>
             {!isAdmin && (
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/[0.04] text-slate-500 border border-white/[0.06]">
                 Read-only — admin required to toggle
@@ -84,7 +84,7 @@ function ControlPanel({ open, onClose }: Props) {
           <button
             onClick={refresh}
             disabled={loading}
-            className="text-violet-400/70 hover:text-violet-300 transition-colors disabled:opacity-40"
+            className="text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-40"
             title="Refresh"
           >
             <RefreshCw size={15} className={loading ? "animate-spin" : ""} />

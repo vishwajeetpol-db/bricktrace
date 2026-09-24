@@ -40,9 +40,10 @@ describe("SideNav", () => {
 
   it("renders all primary + secondary destinations", () => {
     render(<SideNav />);
-    ["Home", "Browse", "Lineage Explorer", "Impact Analysis", "Data Quality", "Reports",
+    ["Home", "Lineage Explorer", "Impact Analysis", "Data Quality", "Reports",
      "Business Glossary", "Notifications", "OpenLineage Export", "BI Consumers", "Streaming Topology", "Settings"]
       .forEach((label) => expect(screen.getByText(label)).toBeInTheDocument());
+    expect(screen.queryByText("Browse")).not.toBeInTheDocument();
   });
 
   it("navigates when an item is clicked", async () => {

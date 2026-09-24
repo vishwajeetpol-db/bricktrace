@@ -108,7 +108,7 @@ export function RootCauseWizard({ catalog = '', schema = '', table = '', column 
           </div>
           {error && <p className="text-red-400 text-sm">{error}</p>}
           <button onClick={runAnalysis} disabled={!formState.catalog || !formState.schema || !formState.table || !formState.column}
-            className="w-full py-3 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed">
+            className="w-full py-3 bg-accent text-white rounded-lg font-medium hover:bg-accent-dark disabled:opacity-50 disabled:cursor-not-allowed">
             Analyze Root Cause
           </button>
         </div>

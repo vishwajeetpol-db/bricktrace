@@ -27,8 +27,7 @@ type NavItem = {
 const PRIMARY: NavItem[] = [
   { label: "Home", icon: Home, action: goLanding, views: ["landing"] },
   { label: "Search", icon: Search, action: () => useLineageStore.getState().setGlobalSearchOpen(true) },
-  { label: "Browse", icon: FolderOpen, action: goCatalogs, views: ["catalogs", "schemas", "tables"] },
-  { label: "Lineage Explorer", icon: Network, action: goCatalogs, views: ["lineage", "schemaLineage", "catalogLineage"] },
+  { label: "Lineage Explorer", icon: Network, action: goCatalogs, views: ["catalogs", "schemas", "tables", "lineage", "schemaLineage", "catalogLineage"] },
   { label: "Impact Analysis", icon: GitBranchPlus, action: () => goTableLineage(), views: ["tableLineage"] },
   { label: "Data Quality", icon: ShieldCheck, action: () => goDQ(), views: ["dq"] },
   { label: "Reports", icon: FileBarChart, action: goRootCause, views: ["rootCause"] },

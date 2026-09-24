@@ -116,7 +116,7 @@ export function ExportPanel({ catalog = '', schema = '' }: { catalog?: string; s
         {(['export', 'import', 'snapshots'] as const).filter(t => t !== 'import' || isAdmin).map(tab => (
           <button key={tab} onClick={() => { setActiveTab(tab); if (tab === 'snapshots') loadSnapshots(); }}
             className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-              activeTab === tab ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'
+              activeTab === tab ? 'bg-accent text-white' : 'text-gray-400 hover:text-white'
             }`}>
             {tab === 'export' ? 'OpenLineage Export' : tab === 'import' ? 'Import Events' : 'Graph Snapshots'}
           </button>
@@ -133,7 +133,7 @@ export function ExportPanel({ catalog = '', schema = '' }: { catalog?: string; s
             <p className="text-sm text-gray-300">Scope: <span className="text-indigo-400">{catalog}{schema ? '.' + schema : ' (all schemas)'}</span></p>
           </div>
           <button onClick={handleExportOpenLineage} disabled={!catalog || exporting}
-            className="px-6 py-3 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-50">
+            className="px-6 py-3 bg-accent text-white rounded-lg font-medium hover:bg-accent-dark disabled:opacity-50">
             {exporting ? 'Exporting...' : 'Export as OpenLineage JSON'}
           </button>
         </div>
@@ -165,7 +165,7 @@ export function ExportPanel({ catalog = '', schema = '' }: { catalog?: string; s
             <p className="text-gray-400 text-sm">Point-in-time graph snapshots for historical comparison.</p>
             <button onClick={captureSnapshot} disabled={!catalog}
               title={!catalog ? 'Select a catalog first' : undefined}
-              className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 disabled:opacity-50">
+              className="px-4 py-2 bg-accent text-white rounded-lg text-sm hover:bg-accent-dark disabled:opacity-50">
               Capture Now
             </button>
           </div>

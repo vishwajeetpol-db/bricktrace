@@ -138,7 +138,7 @@ export function NotificationsPanel() {
               can only 403. */}
           {isAdmin && (
             <button onClick={triggerScan} disabled={scanning}
-              className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50">
+              className="px-3 py-1.5 text-sm bg-accent text-white rounded hover:bg-accent-dark disabled:opacity-50">
               {scanning ? 'Scanning...' : 'Run Scan'}
             </button>
           )}
@@ -156,7 +156,7 @@ export function NotificationsPanel() {
         {['', 'schema_change', 'dq_degradation', 'sensitive_flow'].map(f => (
           <button key={f} onClick={() => setFilter(f)}
             className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-              filter === f ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+              filter === f ? 'bg-accent text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
             }`}>
             {f ? typeLabel(f) : 'All'}
           </button>
