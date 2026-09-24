@@ -101,19 +101,30 @@ class TestGetWorkspaceClient:
 class TestTargetTableEntitlement:
     """The precheck verifies the REQUESTING user can access the TARGET table via
     information_schema, run as the user (get_read_client). No CAN_MANAGE, no
-    cross-workspace ACL read. Fails closed."""
+    cross-workspace ACL read. Fails closed — including when identity isn't enforced."""
 
     def test_user_with_access_ok(self):
         import backend.lineage_service as ls
-        with patch.object(ls, "get_read_client", return_value=MagicMock()), \
+        with patch.object(ls, "ENFORCE_USER_IDENTITY", True), \
+             patch.object(ls, "get_read_client", return_value=MagicMock()), \
              patch.object(ls, "_execute_sql", return_value=[{"1": 1}]):
             assert fw.user_can_access_target_table("cat.sch.tbl") is True
 
     def test_user_without_access_denied(self):
         import backend.lineage_service as ls
-        with patch.object(ls, "get_read_client", return_value=MagicMock()), \
+        with patch.object(ls, "ENFORCE_USER_IDENTITY", True), \
+             patch.object(ls, "get_read_client", return_value=MagicMock()), \
              patch.object(ls, "_execute_sql", return_value=[]):  # UC hides the row
             assert fw.user_can_access_target_table("cat.sch.tbl") is False
+
+    def test_denied_when_identity_not_enforced(self):
+        # With ENFORCE_USER_IDENTITY off, the check would run as the app SP (broad)
+        # and pass for everyone — so it must fail CLOSED instead.
+        import backend.lineage_service as ls
+        with patch.object(ls, "ENFORCE_USER_IDENTITY", False), \
+             patch.object(ls, "get_read_client") as grc:
+            assert fw.user_can_access_target_table("cat.sch.tbl") is False
+            grc.assert_not_called()
 
     def test_malformed_name_denied(self):
         assert fw.user_can_access_target_table("cat.sch") is False
@@ -121,7 +132,8 @@ class TestTargetTableEntitlement:
 
     def test_error_fails_closed(self):
         import backend.lineage_service as ls
-        with patch.object(ls, "get_read_client", return_value=MagicMock()), \
+        with patch.object(ls, "ENFORCE_USER_IDENTITY", True), \
+             patch.object(ls, "get_read_client", return_value=MagicMock()), \
              patch.object(ls, "_execute_sql", side_effect=RuntimeError("no identity")):
             assert fw.user_can_access_target_table("cat.sch.tbl") is False
 
@@ -157,6 +169,9 @@ class TestExecuteSql:
 
 
 class TestRegistry:
+    def setup_method(self):
+        fw._peers_cache = None  # the read is TTL-cached; isolate each test
+
     def test_list_peers_empty_when_flag_off(self):
         with patch.object(fw, "get_flag_state", return_value=False):
             assert fw.list_peer_workspaces() == []
@@ -185,6 +200,16 @@ class TestRegistry:
             assert fw.get_peer("222") is None   # disabled
             assert fw.get_peer("999") is None   # not present
         assert fw.get_peer("") is None          # blank id
+
+    def test_get_peer_parses_string_enabled(self):
+        # The Statement Execution API returns the BOOLEAN column as a STRING;
+        # bool("false") is True, so a string "false" must NOT resolve.
+        with patch.object(fw, "list_peer_workspaces",
+                          return_value=[{"workspace_id": "222", "enabled": "false"}]):
+            assert fw.get_peer("222") is None
+        with patch.object(fw, "list_peer_workspaces",
+                          return_value=[{"workspace_id": "222", "enabled": "true"}]):
+            assert fw.get_peer("222")["workspace_id"] == "222"
 
     def test_register_peer_validates_and_inserts(self):
         with patch.object(fw, "assert_databricks_workspace_url", side_effect=lambda u, *a: u), \

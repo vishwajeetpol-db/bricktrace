@@ -246,15 +246,21 @@ def _build_lineage_map_sheet(wb, all_nodes, raw_edges, entity_names=None, sheet_
     def is_entity(node) -> bool:
         return getattr(node, "node_type", None) == "entity"
 
+    # entity_names is keyed by the NON-namespaced entity:{type}:{id} (see main.py),
+    # while node.id is now workspace-namespaced (entity:{ws}:{type}:{id}). Look names
+    # up by the non-namespaced key so resolved display names aren't lost.
+    def _name_key(node) -> str:
+        return f"entity:{node.entity_type}:{node.entity_id}"
+
     def box_text(node) -> str:
         if is_entity(node):
-            nm = entity_names.get(node.id) or node.display_name or f"{node.entity_type} {node.entity_id[:8]}"
+            nm = entity_names.get(_name_key(node)) or node.display_name or f"{node.entity_type} {node.entity_id[:8]}"
             return f"{nm}\n{node.entity_type}"
         return f"{node.name}\n{node.table_type} · {node.lineage_status}"
 
     def box_note(node) -> str:
         if is_entity(node):
-            nm = entity_names.get(node.id) or node.display_name or node.entity_type
+            nm = entity_names.get(_name_key(node)) or node.display_name or node.entity_type
             extra = f"\nlast run: {node.last_run}" if node.last_run else ""
             return f"{nm}\n{node.entity_type} · {node.entity_id}{extra}"
         return (

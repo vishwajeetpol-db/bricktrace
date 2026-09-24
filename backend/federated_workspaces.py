@@ -28,6 +28,7 @@ they are just distinct registry rows pointing at distinct secret keys.
 from __future__ import annotations
 
 import os
+import time
 import base64
 import logging
 import threading
@@ -38,7 +39,7 @@ from databricks.sdk.service.sql import StatementState
 
 from backend.lineage_service import _get_client, _app_workspace_id
 from backend.feature_flags import get_flag_state
-from backend.validators import UnsafeOutboundURL, assert_databricks_workspace_url
+from backend.validators import UnsafeOutboundURL, assert_databricks_workspace_url, sql_str
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,12 @@ FLAG = "federated_sync.live_source_fetch"
 # token refresh; we evict on registry change or an auth error.
 _peer_clients: dict[str, WorkspaceClient] = {}
 _peer_clients_lock = threading.Lock()
+
+# Short-TTL cache of the registry read. get_peer is called twice per cross-workspace
+# request (resolve + client build); without this each call re-ran CREATE TABLE IF
+# NOT EXISTS + SELECT * against the warehouse. Invalidated on registration.
+_peers_cache: "tuple[float, list[dict]] | None" = None
+_PEERS_CACHE_TTL = 30.0  # seconds
 
 
 class PeerNotRegistered(Exception):
@@ -93,24 +100,42 @@ def _ensure_table() -> None:
 
 def list_peer_workspaces() -> list[dict]:
     """Registered peer workspaces. Read path: returns [] (never raises) when the
-    flag is off or the table isn't reachable."""
+    flag is off or the table isn't reachable. Cached for a short TTL so the two
+    get_peer calls on a cross-workspace request don't each re-run DDL + a scan."""
     if not get_flag_state(FLAG):
         return []
+    global _peers_cache
+    if _peers_cache and (time.monotonic() - _peers_cache[0]) < _PEERS_CACHE_TTL:
+        return _peers_cache[1]
     try:
         _ensure_table()
-        return _execute_sql(f"SELECT * FROM {WORKSPACES_TABLE} ORDER BY registered_at DESC")
+        rows = _execute_sql(f"SELECT * FROM {WORKSPACES_TABLE} ORDER BY registered_at DESC")
+        _peers_cache = (time.monotonic(), rows)
+        return rows
     except Exception as e:
         logger.info(f"federated_workspaces: no peers readable yet: {e}")
         return []
 
 
+def _invalidate_peers_cache() -> None:
+    global _peers_cache
+    _peers_cache = None
+
+
 def get_peer(workspace_id: str) -> dict | None:
-    """One enabled registry row for a workspace_id, or None."""
+    """One ENABLED registry row for a workspace_id, or None.
+
+    The Statement Execution API returns the BOOLEAN `enabled` column as a STRING
+    ("true"/"false"), and bool("false") is True — so parse it as text (the same
+    idiom the rest of the codebase uses for system-table booleans). A disabled
+    peer must not resolve, or a revoked cross-workspace fetch would keep working.
+    """
     wid = str(workspace_id or "").strip()
     if not wid:
         return None
     for row in list_peer_workspaces():
-        if str(row.get("workspace_id")) == wid and bool(row.get("enabled", True)):
+        enabled = str(row.get("enabled", "true")).strip().lower() == "true"
+        if str(row.get("workspace_id")) == wid and enabled:
             return row
     return None
 
@@ -134,14 +159,16 @@ def register_peer_workspace(workspace_id: str, deployment_host: str, actor: str,
     """
     host = assert_databricks_workspace_url(deployment_host, "peer deployment host")
     _ensure_table()
-    safe = lambda s: (str(s) or "").replace("'", "")
+    # Use the canonical escaper (handles backslash-then-quote and None), not a
+    # bare quote strip — this is an admin-facing write.
     _execute_sql(
         f"INSERT INTO {WORKSPACES_TABLE} VALUES ("
-        f"'{safe(workspace_id)}', '{safe(host)}', '{safe(display_name)}', "
-        f"'{safe(auth_kind)}', '{safe(secret_scope)}', '{safe(client_id_key)}', "
-        f"'{safe(client_secret_key)}', {'true' if enabled else 'false'}, "
-        f"'{safe(actor)}', current_timestamp())"
+        f"'{sql_str(workspace_id)}', '{sql_str(host)}', '{sql_str(display_name)}', "
+        f"'{sql_str(auth_kind)}', '{sql_str(secret_scope)}', '{sql_str(client_id_key)}', "
+        f"'{sql_str(client_secret_key)}', {'true' if enabled else 'false'}, "
+        f"'{sql_str(actor)}', current_timestamp())"
     )
+    _invalidate_peers_cache()
     return {"workspace_id": str(workspace_id), "deployment_host": host,
             "auth_kind": auth_kind, "enabled": enabled}
 
@@ -238,14 +265,26 @@ def user_can_access_target_table(target_table: str) -> bool:
     metastore-wide, so this runs on the app's own warehouse.
 
     Fails CLOSED: a malformed name, an unresolved user identity, or any error -> False.
+
+    CRITICAL: this gate is only meaningful when ENFORCE_USER_IDENTITY is on — that's
+    what makes get_read_client() run as the USER. With it off, get_read_client()
+    returns the app SP (broad access), so the check would pass for everyone and the
+    per-user gate becomes a no-op. So when identity is NOT enforced we DENY: the
+    security model for cross-workspace fetch depends on per-user identity.
     """
     parts = (target_table or "").split(".")
     if len(parts) != 3:
         return False
     cat, sch, tbl = parts  # each is [A-Za-z0-9_]+ (validated by the route's _FULL_NAME_RE)
     try:
-        from backend.lineage_service import get_read_client, _execute_sql
-        client = get_read_client()  # the USER's client when ENFORCE_USER_IDENTITY is on
+        from backend.lineage_service import ENFORCE_USER_IDENTITY, get_read_client, _execute_sql
+        if not ENFORCE_USER_IDENTITY:
+            logger.warning(
+                "cross-workspace entitlement precheck denied: ENFORCE_USER_IDENTITY is off, "
+                "so the check cannot run as the requesting user. Enable it to use cross-workspace fetch."
+            )
+            return False
+        client = get_read_client()  # the USER's client (ENFORCE_USER_IDENTITY is on)
         rows = _execute_sql(
             client,
             f"SELECT 1 FROM `{cat}`.information_schema.tables "
