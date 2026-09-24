@@ -9,6 +9,7 @@ import {
   DQPropagation,
 } from "../api/client";
 import { RingGauge, TrendLine, DimensionDonut, scoreColor, gradeColor } from "./dq/DQCharts";
+import { RuleEditor, RuleSuggestions } from "./dq/RuleEditor";
 import { dimensionForRuleType, DQ_DIMENSIONS } from "../lib/dqDimensions";
 
 interface Props {
@@ -100,6 +101,45 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
     if (tableFqn && FQN_RE.test(tableFqn)) analyze(tableFqn);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableFqn]);
+
+  const [profileLoading, setProfileLoading] = useState(false);
+  const runLiveProfile = useCallback(async () => {
+    if (!selected) return;
+    const [c, s, t] = selected.split(".");
+    setProfileLoading(true);
+    try {
+      setProfile(await api.getColumnProfile(c, s, t, true));
+    } catch {
+      /* leave the existing (non-live) profile in place */
+    } finally {
+      setProfileLoading(false);
+    }
+  }, [selected]);
+
+  const onDeleteRule = useCallback(
+    async (ruleId: string) => {
+      try {
+        await api.deleteDQRule(ruleId);
+      } catch {
+        /* ignore — the row simply stays */
+      }
+      if (selected) analyze(selected);
+    },
+    [selected, analyze],
+  );
+
+  const profileColumnNames = useMemo(() => (profile?.columns ?? []).map((c) => c.name), [profile]);
+  const profileRowCount = useMemo(() => {
+    const fromLive = profile?.columns?.find((c) => c.total_rows != null)?.total_rows;
+    if (fromLive != null) return fromLive;
+    const raw = profile?.row_count_approx;
+    if (!raw) return null;
+    // row_count_approx can be a Delta detail string like "… , 4750000 rows".
+    const m = String(raw).match(/([\d,]+)\s*rows/);
+    if (m) return Number(m[1].replace(/,/g, ""));
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }, [profile]);
 
   // Rules to reason about: prefer live metrics, else the authored inventory.
   const ruleTypes = useMemo(
@@ -287,8 +327,16 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
 
           {/* Per-rule + dimensions */}
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
-            <Section title="Rule results">
-              <RuleResults metrics={metrics} rules={rules} isAdmin={isAdmin} />
+            <Section
+              title="Rule results"
+              action={isAdmin ? <RuleEditor tableFqn={selected} columns={profileColumnNames} onSaved={() => analyze(selected)} /> : undefined}
+            >
+              <RuleResults
+                metrics={metrics}
+                rules={rules}
+                isAdmin={isAdmin}
+                onDelete={isAdmin ? onDeleteRule : undefined}
+              />
             </Section>
             <Section title="Rules by dimension">
               {dimensionSegments.length === 0 ? (
@@ -310,10 +358,33 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
             </Section>
           </div>
 
+          {/* Suggested rules (admin, needs a live profile for total_rows) */}
+          {isAdmin && (
+            <Section title="Suggested rules" hint="from a live column profile">
+              <RuleSuggestions
+                tableFqn={selected}
+                columns={profile?.columns ?? []}
+                existingRules={rules}
+                onSaved={() => analyze(selected)}
+              />
+            </Section>
+          )}
+
           {/* Column profiling */}
           <Section
             title="Column profile"
-            hint={profile?.row_count_approx ? `~${Number(profile.row_count_approx).toLocaleString()} rows` : ""}
+            hint={profileRowCount != null ? `~${profileRowCount.toLocaleString()} rows` : ""}
+            action={
+              isAdmin ? (
+                <button
+                  onClick={runLiveProfile}
+                  disabled={profileLoading}
+                  className="px-3 py-1.5 text-[12px] rounded-lg border border-white/[0.1] text-slate-300 hover:border-accent/40 hover:text-white transition-colors disabled:opacity-40"
+                >
+                  {profileLoading ? "Profiling…" : "Profile now (live)"}
+                </button>
+              ) : undefined
+            }
           >
             <ColumnProfile profile={profile} />
           </Section>
@@ -335,12 +406,23 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+function Section({
+  title,
+  hint,
+  action,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <div className="p-5 bg-surface-50 rounded-xl border border-white/[0.06]">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center gap-3 mb-3">
         <h3 className="text-[13px] font-semibold text-slate-200">{title}</h3>
         {hint && <span className="text-[11px] text-slate-500">{hint}</span>}
+        {action && <div className="ml-auto">{action}</div>}
       </div>
       {children}
     </div>
@@ -371,10 +453,12 @@ function RuleResults({
   metrics,
   rules,
   isAdmin,
+  onDelete,
 }: {
   metrics: DQMetricsResult | null;
   rules: DQRule[];
   isAdmin: boolean;
+  onDelete?: (ruleId: string) => void;
 }) {
   if (metrics && metrics.metrics.length > 0) {
     const sorted = [...metrics.metrics].sort((a, b) => (a.pass_rate ?? 2) - (b.pass_rate ?? 2));
@@ -402,6 +486,15 @@ function RuleResults({
               )}
               {m.failing_rows ? <span className="text-slate-600"> · {m.failing_rows.toLocaleString()}✗</span> : null}
             </div>
+            {onDelete && m.rule_id && (
+              <button
+                onClick={() => onDelete(m.rule_id)}
+                title="Delete rule"
+                className="shrink-0 text-slate-600 hover:text-red-400 text-[13px] leading-none"
+              >
+                ×
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -419,6 +512,15 @@ function RuleResults({
             {r.column_name && <span className="text-slate-500">· {r.column_name}</span>}
             {r.expression && <span className="text-slate-600 truncate font-mono text-[11px]">{r.expression}</span>}
             {r.severity && <span className="ml-auto text-[10px] uppercase text-slate-500">{r.severity}</span>}
+            {onDelete && r.rule_id && (
+              <button
+                onClick={() => onDelete(r.rule_id as string)}
+                title="Delete rule"
+                className={`${r.severity ? "" : "ml-auto"} shrink-0 text-slate-600 hover:text-red-400 text-[13px] leading-none`}
+              >
+                ×
+              </button>
+            )}
           </div>
         ))}
       </div>

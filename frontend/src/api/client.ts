@@ -155,6 +155,7 @@ export interface DQProfileColumn {
   distinct_count?: number | null;
   null_count?: number | null;
   null_pct?: number | null;
+  total_rows?: number | null;
   min?: string | number | null;
   max?: string | number | null;
   avg_col_len?: number | null;
@@ -966,11 +967,31 @@ export const api = {
   /** Recorded quality-score history for a table (for the trend chart). */
   getDQTrends: (tableFqn: string, days = 30) =>
     fetchJson<DQTrends>(`${BASE}/dq-rules/trends?table_fqn=${encodeURIComponent(tableFqn)}&days=${days}`),
-  /** Column profiling overlay (null %, distinct count, stats). Non-live = no admin needed. */
-  getColumnProfile: (catalog: string, schema: string, table: string) =>
+  /** Column profiling overlay (null %, distinct count, stats). live=true runs an ad-hoc
+   *  query (admin-only) and works even without ANALYZE stats. */
+  getColumnProfile: (catalog: string, schema: string, table: string, live = false) =>
     fetchJson<DQProfile>(
-      `${BASE}/diagnostics/profile?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`,
+      `${BASE}/diagnostics/profile?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}${live ? "&live=true" : ""}`,
     ),
+  /** Create or update a DQ rule. Admin-only. */
+  upsertDQRule: async (rule: {
+    table_fqn: string; column_name?: string; rule_type: string;
+    expression: string; severity?: string; notes?: string; rule_id?: string;
+  }) => {
+    const res = await fetch(`${BASE}/dq-rules`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(rule),
+    });
+    if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+    return res.json() as Promise<{ rule_id: string; status: string }>;
+  },
+  /** Delete a DQ rule by id. Admin-only. */
+  deleteDQRule: async (ruleId: string) => {
+    const res = await fetch(`${BASE}/dq-rules/${encodeURIComponent(ruleId)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+    return res.json() as Promise<{ rule_id: string; status: string }>;
+  },
   /** Upstream DQ coverage across lineage. */
   getDQPropagation: (catalog: string, schema: string, table: string) =>
     fetchJson<DQPropagation>(
