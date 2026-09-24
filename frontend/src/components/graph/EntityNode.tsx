@@ -288,20 +288,19 @@ function EntityNodeComponent({ data }: NodeProps<EntityNodeData>) {
           border bg-gradient-to-r ${bgGradient} ${borderColor}
           ${isDimmed ? "pointer-events-none" : ""}
         `}
-        style={{ minWidth: 160 }}
+        // Left accent bar = which workspace this producer ran in (only when the
+        // graph spans >1 workspace). A thick colored left border keeps freshness
+        // on the status dot/icon and never competes with it. See workspaceColors.ts.
+        style={{
+          minWidth: 160,
+          ...(data.workspaceColor
+            ? { borderLeftColor: data.workspaceColor, borderLeftWidth: 4, paddingLeft: 11 }
+            : {}),
+        }}
+        title={data.workspaceColor ? `Workspace ${data.workspace_id}` : undefined}
       >
         <div className="flex items-center gap-2.5">
           <div className={`w-1.5 h-1.5 rounded-full ${dotColor} shadow-[0_0_6px] ${dotShadow} flex-shrink-0`} />
-          {/* Workspace grouping marker — a square (vs the round status dot) that
-              only appears when the graph spans multiple workspaces. */}
-          {data.workspaceColor && (
-            <span
-              title={`Workspace ${data.workspace_id}`}
-              aria-label={`Workspace ${data.workspace_id}`}
-              className="w-2 h-2 rounded-[3px] flex-shrink-0 ring-1 ring-white/25"
-              style={{ backgroundColor: data.workspaceColor }}
-            />
-          )}
           <Icon size={13} className={`${iconColor} flex-shrink-0 opacity-70`} />
           <span className={`${businessView ? "font-sans" : "font-mono"} font-medium text-[11px] text-slate-300 truncate max-w-[140px]`}>
             {label}

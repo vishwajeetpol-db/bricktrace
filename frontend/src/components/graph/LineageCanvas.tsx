@@ -1011,7 +1011,7 @@ function LineageCanvas() {
             {[...workspaceColors.entries()].map(([wsId, color]) => (
               <div key={wsId} className="flex items-center gap-2">
                 <span
-                  className="w-2.5 h-2.5 rounded-[3px] flex-shrink-0 ring-1 ring-white/25"
+                  className="w-1 h-3.5 rounded-sm flex-shrink-0"
                   style={{ backgroundColor: color }}
                 />
                 <span className="font-mono text-[10px] text-slate-300 truncate" title={wsId}>
