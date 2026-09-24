@@ -51,6 +51,11 @@ describe("ControlPanel", () => {
     expect(screen.getByText(/3 peers/)).toBeInTheDocument();
   });
 
+  it("includes the navigation menu in the header", () => {
+    render(<ControlPanel open onClose={vi.fn()} />);
+    expect(screen.getByLabelText("Open menu")).toBeInTheDocument();
+  });
+
   it("closes via the close button", async () => {
     const onClose = vi.fn();
     const user = userEvent.setup();

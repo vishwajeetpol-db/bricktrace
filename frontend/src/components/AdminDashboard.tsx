@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, Activity, Database, Clock, Cpu, HardDrive, Zap, Users, Layers, AlertTriangle, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import type { AdminStatus, CapabilityCacheEntry } from "../api/client";
+import HeaderMenu from "./layout/HeaderMenu";
 
 const CAP_TAB_LABEL: Record<string, string> = {
   impact: "Impact",
@@ -133,6 +134,7 @@ function AdminDashboard({ open, onClose }: Props) {
                     <Trash2 size={11} /> Wipe lineage
                   </button>
                   {loading && <div className="w-3 h-3 border border-emerald-500/40 border-t-emerald-400 rounded-full animate-spin" />}
+                  <HeaderMenu />
                   <button onClick={onClose} className="text-emerald-500/40 hover:text-emerald-400 transition-colors">
                     <X size={18} />
                   </button>

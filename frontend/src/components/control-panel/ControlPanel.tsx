@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, SlidersHorizontal, RefreshCw, Database, Share2 } from "lucide-react";
 import { useLineageStore } from "../../store/lineageStore";
 import { useFeatureFlagStore } from "../../store/featureFlagStore";
+import HeaderMenu from "../layout/HeaderMenu";
 import {
   getFeatureFlags,
   setFeatureFlag,
@@ -100,6 +101,7 @@ function ControlPanel({ open, onClose }: Props) {
                   >
                     <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
                   </button>
+                  <HeaderMenu />
                   <button onClick={onClose} className="text-violet-400/50 hover:text-violet-300 transition-colors" aria-label="Close">
                     <X size={18} />
                   </button>

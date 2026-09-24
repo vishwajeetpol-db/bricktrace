@@ -85,6 +85,11 @@ describe("AdminDashboard", () => {
     expect(api.getAdminStatus).not.toHaveBeenCalled();
   });
 
+  it("includes the navigation menu in the header", async () => {
+    render(<AdminDashboard open onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText("Open menu")).toBeInTheDocument());
+  });
+
   it("fetches + renders metrics, inventory rows, and capability cache entries", async () => {
     render(<AdminDashboard open onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText("SYSTEM STATUS")).toBeInTheDocument());
