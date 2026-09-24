@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ReportsHub } from "./ReportsHub";
 import { useLineageStore } from "../../store/lineageStore";
+import { useFeatureFlagStore } from "../../store/featureFlagStore";
 
 import { createElement } from "react";
 vi.mock("framer-motion", () => ({
@@ -23,6 +24,7 @@ describe("ReportsHub", () => {
     goDQ.mockReset();
     global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ rules: [], notifications: [] }) }) as any;
     useLineageStore.setState({ allTables: [] });
+    useFeatureFlagStore.setState({ flags: [] });
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -54,6 +56,15 @@ describe("ReportsHub", () => {
     render(<ReportsHub />);
     await user.click(screen.getByText("Data Quality"));
     expect(goDQ).toHaveBeenCalled();
+  });
+
+  it("hides the Data Quality card in metadata-only mode", () => {
+    useFeatureFlagStore.setState({ flags: [{ id: "metadata_only.hide_data_quality", enabled: true }] as any });
+    render(<ReportsHub />);
+    expect(screen.queryByText("Data Quality")).not.toBeInTheDocument();
+    // the rest of the hub stays
+    expect(screen.getByText("Executive Overview")).toBeInTheDocument();
+    expect(screen.getByText("Root Cause Analysis")).toBeInTheDocument();
   });
 
   it("does not open 'soon' reports", async () => {

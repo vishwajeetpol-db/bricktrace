@@ -41,7 +41,6 @@ export default function App() {
   const liveMode = useLineageStore((s) => s.liveMode);
   const isAdmin = useLineageStore((s) => s.isAdmin);
   const hideDataQuality = useFeatureFlagEnabled("metadata_only.hide_data_quality");
-  const hideReports = useFeatureFlagEnabled("metadata_only.hide_reports");
   const retryCount = useRef(0);
   const lineageAbortRef = useRef<AbortController | null>(null);
 
@@ -297,7 +296,7 @@ export default function App() {
     );
   }
 
-  if (route.view === "rootCause" && !hideReports) {
+  if (route.view === "rootCause") {
     return (
       <>
         <PageShell subtitle="Reports" bare>

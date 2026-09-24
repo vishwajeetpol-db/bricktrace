@@ -61,7 +61,6 @@ function readCollapsed(fallback: boolean): boolean {
 function SideNav({ initialCollapsed }: { initialCollapsed?: boolean }) {
   const isAdmin = useLineageStore((s) => s.isAdmin);
   const hideDataQuality = useFeatureFlagEnabled("metadata_only.hide_data_quality");
-  const hideReports = useFeatureFlagEnabled("metadata_only.hide_reports");
   const route = useRouter();
   const [collapsed, setCollapsed] = useState(() => readCollapsed(initialCollapsed ?? false));
   const [userEmail, setUserEmail] = useState<string | null>(null);
@@ -119,9 +118,7 @@ function SideNav({ initialCollapsed }: { initialCollapsed?: boolean }) {
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-2 space-y-1 overflow-y-auto overflow-x-hidden">
-        {PRIMARY.filter((i) =>
-          !(hideDataQuality && i.label === "Data Quality") && !(hideReports && i.label === "Reports"),
-        ).map(renderItem)}
+        {PRIMARY.filter((i) => !(hideDataQuality && i.label === "Data Quality")).map(renderItem)}
         <div className="my-2 border-t border-white/[0.08]" />
         {SECONDARY.map(renderItem)}
         <div className="my-2 border-t border-white/[0.08]" />

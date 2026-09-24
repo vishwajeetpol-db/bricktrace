@@ -91,17 +91,19 @@ class TestListFlags:
         result = list_flags()
         assert len(result) == len(FLAG_DEFINITIONS)
 
-    def test_metadata_only_flags_registered_and_default_off(self, mock_feature_flags_sql):
-        """The metadata-only hide toggles exist under one module and default off
-        (so Data Quality / Reports stay visible until an admin opts in)."""
+    def test_metadata_only_flag_registered_and_default_off(self, mock_feature_flags_sql):
+        """The metadata-only Hide-Data-Quality toggle exists and defaults off
+        (so Data Quality stays visible until an admin opts in)."""
         mock_feature_flags_sql.return_value = []  # no persisted state
         from backend.feature_flags import list_flags, get_flag_state
         by_id = {f["id"]: f for f in list_flags()}
-        for fid in ("metadata_only.hide_data_quality", "metadata_only.hide_reports"):
-            assert fid in by_id
-            assert by_id[fid]["module_label"] == "Metadata-Only Mode"
-            assert by_id[fid]["enabled"] is False
-            assert get_flag_state(fid) is False
+        fid = "metadata_only.hide_data_quality"
+        assert fid in by_id
+        assert by_id[fid]["module_label"] == "Metadata-Only Mode"
+        assert by_id[fid]["enabled"] is False
+        assert get_flag_state(fid) is False
+        # The separate hide-reports flag was dropped — we only hide DQ now.
+        assert "metadata_only.hide_reports" not in by_id
 
 
 class TestSetFlagState:

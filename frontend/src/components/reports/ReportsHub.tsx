@@ -5,6 +5,7 @@ import {
   ArrowLeft, ArrowRight, Sparkles,
 } from "lucide-react";
 import { goDQ } from "../../hooks/useRouter";
+import { useFeatureFlagEnabled } from "../../store/featureFlagStore";
 import { OverviewReport } from "./OverviewReport";
 import { RootCauseWizard } from "../RootCauseWizard";
 
@@ -27,11 +28,13 @@ interface Props {
 
 export function ReportsHub({ onSelectTable }: Props) {
   const [active, setActive] = useState<ReportId | null>(null);
+  const hideDataQuality = useFeatureFlagEnabled("metadata_only.hide_data_quality");
 
   const cards: ReportCard[] = [
     { id: "overview", title: "Executive Overview", desc: "Estate health at a glance — tables, coverage, quality, activity.", icon: LayoutDashboard, tint: "#FF7A5C", edge: "from-orange-500/70" },
     { id: "rootCause", title: "Root Cause Analysis", desc: "Trace an anomaly upstream through lineage + producer failures.", icon: ScanSearch, tint: "#f87171", edge: "from-rose-500/70" },
-    { title: "Data Quality", desc: "Portfolio scores, coverage and trends across your tables.", icon: ShieldCheck, tint: "#34d399", edge: "from-emerald-500/70", action: () => goDQ() },
+    // The Data Quality card reads row-level data — hidden in metadata-only mode.
+    ...(hideDataQuality ? [] : [{ title: "Data Quality", desc: "Portfolio scores, coverage and trends across your tables.", icon: ShieldCheck, tint: "#34d399", edge: "from-emerald-500/70", action: () => goDQ() } as ReportCard]),
     { title: "Lineage Coverage", desc: "Tables with vs without lineage, orphans and hub tables.", icon: Network, tint: "#38bdf8", edge: "from-sky-500/70", soon: true },
     { title: "Governance & PII", desc: "Sensitive tables, unclassified gaps and tag coverage.", icon: GitBranchPlus, tint: "#a78bfa", edge: "from-violet-500/70", soon: true },
     { title: "Cost & Impact", desc: "Most expensive producers and highest blast-radius tables.", icon: DollarSign, tint: "#fbbf24", edge: "from-amber-500/70", soon: true },

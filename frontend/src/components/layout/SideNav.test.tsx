@@ -100,17 +100,14 @@ describe("SideNav", () => {
     expect(screen.getByLabelText("Expand sidebar")).toBeInTheDocument();
   });
 
-  it("hides Data Quality and Reports when the metadata-only flags are on", () => {
+  it("hides Data Quality when the metadata-only flag is on, but keeps Reports", () => {
     useFeatureFlagStore.setState({
-      flags: [
-        { id: "metadata_only.hide_data_quality", enabled: true },
-        { id: "metadata_only.hide_reports", enabled: true },
-      ] as any,
+      flags: [{ id: "metadata_only.hide_data_quality", enabled: true }] as any,
     });
     render(<SideNav />);
     expect(screen.queryByText("Data Quality")).not.toBeInTheDocument();
-    expect(screen.queryByText("Reports")).not.toBeInTheDocument();
-    // other items unaffected
+    // Reports (and everything else) stays — we only hide DQ.
+    expect(screen.getByText("Reports")).toBeInTheDocument();
     expect(screen.getByText("Lineage Explorer")).toBeInTheDocument();
   });
 
