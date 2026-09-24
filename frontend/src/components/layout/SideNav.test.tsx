@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import SideNav from "./SideNav";
 import { useLineageStore } from "../../store/lineageStore";
+import { useFeatureFlagStore } from "../../store/featureFlagStore";
 
 const nav = {
   goLanding: vi.fn(), goCatalogs: vi.fn(), goTableLineage: vi.fn(), goDQ: vi.fn(),
@@ -35,6 +36,7 @@ describe("SideNav", () => {
     currentView = "dq";
     try { localStorage.clear(); } catch { /* ignore */ }
     useLineageStore.setState({ isAdmin: false, globalSearchOpen: false });
+    useFeatureFlagStore.setState({ flags: [] });
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -96,6 +98,20 @@ describe("SideNav", () => {
     render(<SideNav initialCollapsed />);
     expect(screen.queryByText("Data Quality")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Expand sidebar")).toBeInTheDocument();
+  });
+
+  it("hides Data Quality and Reports when the metadata-only flags are on", () => {
+    useFeatureFlagStore.setState({
+      flags: [
+        { id: "metadata_only.hide_data_quality", enabled: true },
+        { id: "metadata_only.hide_reports", enabled: true },
+      ] as any,
+    });
+    render(<SideNav />);
+    expect(screen.queryByText("Data Quality")).not.toBeInTheDocument();
+    expect(screen.queryByText("Reports")).not.toBeInTheDocument();
+    // other items unaffected
+    expect(screen.getByText("Lineage Explorer")).toBeInTheDocument();
   });
 
   it("exposes the workspace slot as disabled", () => {

@@ -137,6 +137,14 @@ function ControlPanel({ open, onClose }: Props) {
                     ) : null
                   }
                 />
+                <ModuleSection
+                  moduleLabel="Metadata-Only Mode"
+                  flags={byModule("Metadata-Only Mode")}
+                  isAdmin={isAdmin}
+                  busyFlagId={busyFlagId}
+                  onToggle={handleToggle}
+                  onOpenAccessCheck={setAccessModalFlag}
+                />
                 {!loading && flags.length === 0 && !error && (
                   <div className="text-center py-8 text-[12px] text-slate-500">No capabilities registered.</div>
                 )}

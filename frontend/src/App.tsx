@@ -22,6 +22,8 @@ import TableListView from "./components/browse/TableListView";
 import PageShell from "./components/browse/PageShell";
 import SideNav from "./components/layout/SideNav";
 import { useLineageStore } from "./store/lineageStore";
+import { useFeatureFlagStore, useFeatureFlagEnabled } from "./store/featureFlagStore";
+import { getFeatureFlags } from "./api/controlPanel";
 import { api, setLiveMode } from "./api/client";
 import { useRouter, goLineage, goLanding } from "./hooks/useRouter";
 import { useRecents } from "./hooks/useRecents";
@@ -38,6 +40,8 @@ export default function App() {
   const schema = useLineageStore((s) => s.schema);
   const liveMode = useLineageStore((s) => s.liveMode);
   const isAdmin = useLineageStore((s) => s.isAdmin);
+  const hideDataQuality = useFeatureFlagEnabled("metadata_only.hide_data_quality");
+  const hideReports = useFeatureFlagEnabled("metadata_only.hide_reports");
   const retryCount = useRef(0);
   const lineageAbortRef = useRef<AbortController | null>(null);
 
@@ -46,6 +50,13 @@ export default function App() {
     api.getUserInfo()
       .then((info) => useLineageStore.getState().setIsAdmin(info.isAdmin))
       .catch(() => useLineageStore.getState().setIsAdmin(false));
+  }, []);
+
+  // Load feature flags app-wide so the nav + routes can honour metadata-only toggles.
+  useEffect(() => {
+    getFeatureFlags()
+      .then((r) => useFeatureFlagStore.getState().setFlags(r.flags))
+      .catch(() => { /* nav falls back to showing everything */ });
   }, []);
 
   // R5: Check system-table / SP-grant health on mount and surface as a banner
@@ -240,7 +251,7 @@ export default function App() {
     return <ControlPanel open={true} onClose={goLanding} />;
   }
 
-  if (route.view === "dq") {
+  if (route.view === "dq" && !hideDataQuality) {
     return (
       <>
         <PageShell subtitle="Column-level data quality metrics" bare>
@@ -286,7 +297,7 @@ export default function App() {
     );
   }
 
-  if (route.view === "rootCause") {
+  if (route.view === "rootCause" && !hideReports) {
     return (
       <>
         <PageShell subtitle="Reports" bare>
