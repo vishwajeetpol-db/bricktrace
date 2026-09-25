@@ -62,7 +62,9 @@ export function OverviewReport({ onSelectTable }: { onSelectTable?: (fqn: string
     return { total: allTables.length, catalogs: catalogs.size, schemas: schemas.size, byType, topCatalogs };
   }, [allTables]);
 
-  const dqCoverage = stats.total > 0 ? rulesByTable.size / stats.total : 0;
+  // Clamp to 1: rulesByTable is estate-wide while stats.total counts only loaded
+  // tables, so the ratio can exceed 1 and overfill the ring / show >100%.
+  const dqCoverage = stats.total > 0 ? Math.min(1, rulesByTable.size / stats.total) : 0;
   const typeSegments = Object.entries(stats.byType)
     .map(([k, v]) => ({ label: k.replace(/_/g, " "), value: v, color: TYPE_COLORS[k] || "#64748b" }))
     .sort((a, b) => b.value - a.value);

@@ -20,6 +20,7 @@ Performance optimizations (v3):
 """
 
 import os
+import re
 import sys
 import time
 import json
@@ -651,7 +652,11 @@ def _categorize_expression(expr: str) -> str:
         return "WINDOW"
     if "CAST" in e or "TO_DATE" in e or "TO_TIMESTAMP" in e or "::" in e:
         return "CAST"
-    if any(op in e for op in (" * ", " + ", " - ", " / ", "*", "/")):
+    # An arithmetic operator genuinely between two operands (word/paren on each
+    # side, spaces optional). This keeps compact `amount*quantity` while NOT
+    # matching `count(*)` (operator flanked by parens) or a separator inside a
+    # string literal like SPLIT(path, '/') (flanked by quotes).
+    if re.search(r"[\w)]\s*[*/+\-]\s*[\w(]", e):
         return "ARITHMETIC"
     if "(" in e:  # a function projection (YEAR/MONTH/CONCAT/UPPER/...)
         return "PROJECTION"

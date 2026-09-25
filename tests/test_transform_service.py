@@ -314,6 +314,11 @@ class TestBacktrackResolverFallback:
         assert ts._categorize_expression("SUM(x)") == "AGGREGATE"
         assert ts._categorize_expression("UPPER(name)") == "PROJECTION"
         assert ts._categorize_expression("") == "UNKNOWN"
+        # compact arithmetic (no spaces) still detected...
+        assert ts._categorize_expression("amount*quantity") == "ARITHMETIC"
+        # ...but a '/' inside a string literal or a count(*) is NOT arithmetic
+        assert ts._categorize_expression("SPLIT(path, '/')") == "PROJECTION"
+        assert ts._categorize_expression("COUNT(*)") == "AGGREGATE"
 
     def test_single_hop_lineage(self):
         edges = [_edge_row("x", "y")]  # col:c.s.up::x -> col:c.s.t::y
