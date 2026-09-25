@@ -39,7 +39,9 @@ describe("GlossaryPanel", () => {
     global.fetch = fullFetch() as any;
     render(<GlossaryPanel />);
     expect(await screen.findByText("Revenue")).toBeInTheDocument();
-    expect(screen.getByText("approved")).toBeInTheDocument();
+    // "approved" now appears both as the term's status badge and as a status
+    // filter pill — the badge is what matters here.
+    expect(screen.getAllByText("approved").length).toBeGreaterThanOrEqual(1);
   });
 
   it("switches to domains tab", async () => {
@@ -144,5 +146,74 @@ describe("GlossaryPanel", () => {
     expect(await screen.findByText("No domains defined yet.")).toBeInTheDocument();
     await user.click(screen.getByText("KPIs"));
     expect(await screen.findByText("No KPIs defined yet.")).toBeInTheDocument();
+  });
+
+  it("adds a domain from the Domains tab", async () => {
+    const fetchMock = fullFetch();
+    global.fetch = fetchMock as any;
+    const user = userEvent.setup();
+    render(<GlossaryPanel />);
+    await screen.findByText("Revenue");
+    await user.click(screen.getByText("Domains"));
+    await user.click(screen.getByText("+ Add Domain"));
+    await user.type(screen.getByPlaceholderText("Domain name"), "Marketing");
+    await user.click(screen.getByText("Save Domain"));
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((c) => c[1]?.method === "POST" && String(c[0]).includes("glossary/domains"))).toBe(true);
+    });
+  });
+
+  it("adds a KPI from the KPIs tab", async () => {
+    const fetchMock = fullFetch();
+    global.fetch = fetchMock as any;
+    const user = userEvent.setup();
+    render(<GlossaryPanel />);
+    await screen.findByText("Revenue");
+    await user.click(screen.getByText("KPIs"));
+    await user.click(screen.getByText("+ Add KPI"));
+    await user.type(screen.getByPlaceholderText("KPI name"), "ARR");
+    await user.click(screen.getByText("Save KPI"));
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((c) => c[1]?.method === "POST" && String(c[0]).includes("glossary/kpis"))).toBe(true);
+    });
+  });
+
+  it("expands a term and links it to a table", async () => {
+    const fetchMock = fullFetch({ "glossary/terms/t1": { term, links: [] } });
+    global.fetch = fetchMock as any;
+    const user = userEvent.setup();
+    render(<GlossaryPanel />);
+    await user.click(await screen.findByText("Revenue"));
+    // expanded term shows the "not linked" prompt + a link editor
+    expect(await screen.findByText(/Not linked to any table yet/)).toBeInTheDocument();
+    await user.type(screen.getByPlaceholderText("catalog.schema.table"), "main.sales.orders");
+    await user.click(screen.getByText("Link"));
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((c) => c[1]?.method === "POST" && String(c[0]).includes("glossary/link"))).toBe(true);
+    });
+  });
+
+  it("runs the propagation wizard and applies a suggestion", async () => {
+    const propResult = {
+      source_table: "main.bronze.sales",
+      source_terms: [{ term_id: "t1", term_name: "Revenue", domain: "Finance" }],
+      downstream_count: 2,
+      suggestions: [{ target_table: "main.gold.revenue_daily", missing_terms: [{ term_id: "t1", name: "Revenue", domain: "Finance" }] }],
+      suggestion_count: 1,
+    };
+    const fetchMock = fullFetch({ "propagate-suggestions": propResult });
+    global.fetch = fetchMock as any;
+    const user = userEvent.setup();
+    render(<GlossaryPanel />);
+    await screen.findByText("Revenue");
+    await user.click(screen.getByText("Propagation"));
+    await user.type(screen.getByPlaceholderText("catalog.schema.table"), "main.bronze.sales");
+    await user.click(screen.getByText("Find suggestions"));
+    // downstream table + its missing term chip render
+    expect(await screen.findByText("main.gold.revenue_daily")).toBeInTheDocument();
+    await user.click(screen.getByText("Apply all"));
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((c) => c[1]?.method === "POST" && String(c[0]).includes("glossary/link"))).toBe(true);
+    });
   });
 });
