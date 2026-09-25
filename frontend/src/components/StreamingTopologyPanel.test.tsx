@@ -9,8 +9,8 @@ vi.mock("../hooks/useRouter", () => ({ goTableLineage: (t?: string) => goTableLi
 // The topology tab is a reactflow graph (excluded from coverage + flaky in jsdom);
 // stub it so panel tests exercise panel logic, not reactflow internals.
 vi.mock("./graph/StreamTopologyGraph", () => ({
-  StreamTopologyGraph: ({ nodes }: { nodes: any[] }) => (
-    <div data-testid="topo-graph">graph:{nodes.length}</div>
+  StreamTopologyGraph: ({ nodes, edges }: { nodes: any[]; edges: any[] }) => (
+    <div data-testid="topo-graph">graph:{nodes.length}:{edges.length}</div>
   ),
 }));
 
@@ -185,6 +185,45 @@ describe("StreamingTopologyPanel", () => {
     expect(screen.queryByText("dev_sandbox")).not.toBeInTheDocument();
     await user.click(option);
     expect((input as HTMLInputElement).value).toBe("prod_sales");
+  });
+
+  it("shows pipeline-level metrics once per pipeline (dedups shared pipelines)", async () => {
+    const a = { table_catalog: "c", table_schema: "s", table_name: "stream_a", fqn: "c.s.stream_a", pipeline_id: "shared", freshness: "fresh" };
+    const b = { table_catalog: "c", table_schema: "s", table_name: "stream_b", fqn: "c.s.stream_b", pipeline_id: "shared", freshness: "fresh" };
+    global.fetch = routeFetch({
+      "streaming-topology": { streaming_tables: [a, b], streaming_edges: [] },
+      "streaming-metrics": { metrics: { shared: { status: "active", throughput_rows: 999, backlog_records: 3, trend: [1, 2] } }, count: 1 },
+    }) as any;
+    const user = userEvent.setup();
+    render(<StreamingTopologyPanel />);
+    await user.click(screen.getByText("Detect Topology"));
+    await screen.findByText("Streaming Tables");
+    await user.click(screen.getByText("Metrics"));
+    await screen.findByText("stream_a");
+    // throughput shown once for the pipeline; the second stream shows the "↳ pipeline" marker
+    expect(screen.getAllByText(/999 rows/).length).toBe(1);
+    expect(screen.getByText("↳ pipeline")).toBeInTheDocument();
+  });
+
+  it("drops edges into filtered-out streams so the DAG has no dangling edges", async () => {
+    const fresh = { table_catalog: "c", table_schema: "s", table_name: "hot", fqn: "c.s.hot", freshness: "fresh", pipeline_id: "p1" };
+    const stale = { table_catalog: "c", table_schema: "s", table_name: "cold", fqn: "c.s.cold", freshness: "stale", pipeline_id: "p2" };
+    global.fetch = routeFetch({
+      "streaming-topology": { streaming_tables: [fresh, stale], streaming_edges: [
+        { source: "c.s.raw1", target: "c.s.hot" },
+        { source: "c.s.raw2", target: "c.s.cold" },
+      ] },
+      "streaming-metrics": { metrics: {}, count: 0 },
+    }) as any;
+    const user = userEvent.setup();
+    render(<StreamingTopologyPanel />);
+    await user.click(screen.getByText("Detect Topology"));
+    await screen.findByText("Streaming Tables");
+    // unfiltered: both nodes + both edges
+    expect(screen.getByTestId("topo-graph")).toHaveTextContent("graph:2:2");
+    // filter to fresh → 1 node, and the edge into the hidden stale stream is dropped
+    await user.click(screen.getByRole("button", { name: "fresh" }));
+    expect(screen.getByTestId("topo-graph")).toHaveTextContent("graph:1:1");
   });
 
   it("shows unavailable error", async () => {

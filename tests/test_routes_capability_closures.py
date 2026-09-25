@@ -150,7 +150,8 @@ class TestStreamingTopologyEnrichment:
             if "system.lakeflow.pipelines" in sql:
                 return [{"pipeline_id": "p1", "name": "orders_pipeline"}]
             if "system.access.table_lineage" in sql:
-                return [{"source_table_full_name": "s3://bucket/raw", "entity_type": "PIPELINE", "entity_id": "p1"}]
+                return [{"target_table_full_name": "main.s.orders_stream",
+                         "source_table_full_name": "s3://bucket/raw", "entity_type": "PIPELINE", "entity_id": "p1"}]
             return []
 
         with patch("backend.routes.capability_closures._execute_sql", side_effect=fake_sql):
@@ -163,6 +164,28 @@ class TestStreamingTopologyEnrichment:
             assert node["pipeline_name"] == "orders_pipeline"
             assert node["freshness"] == "fresh"           # last_altered = now
             assert data["streaming_edges"][0]["source"] == "s3://bucket/raw"
+
+
+class TestStreamProducersBatch:
+    """One batched table_lineage query groups producers per target + fails open."""
+
+    def test_groups_per_target_and_builds_edges(self):
+        from backend.routes import capability_closures as cc
+        rows = [
+            {"target_table_full_name": "c.s.a", "source_table_full_name": "c.s.raw_a", "entity_type": "PIPELINE", "entity_id": "p1"},
+            {"target_table_full_name": "c.s.b", "source_table_full_name": "c.s.raw_b", "entity_type": "PIPELINE", "entity_id": "p2"},
+        ]
+        with patch("backend.routes.capability_closures._execute_sql", return_value=rows):
+            producers, edges = cc._stream_producers_batch(["c.s.a", "c.s.b"])
+        assert producers["c.s.a"]["pipeline_id"] == "p1"
+        assert producers["c.s.b"]["pipeline_id"] == "p2"
+        assert {e["target"] for e in edges} == {"c.s.a", "c.s.b"}
+
+    def test_fails_open_on_error(self):
+        from backend.routes import capability_closures as cc
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=RuntimeError("no priv")):
+            assert cc._stream_producers_batch(["c.s.a"]) == ({}, [])
+        assert cc._stream_producers_batch([]) == ({}, [])
 
 
 class TestStreamingMetrics:

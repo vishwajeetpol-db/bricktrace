@@ -157,6 +157,16 @@ export function StreamingTopologyPanel({ catalog = "" }: Props) {
     [nodes, freshFilter],
   );
 
+  // Keep edges consistent with the freshness filter — otherwise the DAG shows
+  // dangling edges into hidden streams and orphan source boxes. Drop any edge
+  // whose target isn't visible, or whose source is a now-hidden stream.
+  const filteredEdges = useMemo(() => {
+    if (!freshFilter) return edges;
+    const visible = new Set(filtered.map((n) => n.fqn || `${n.table_catalog}.${n.table_schema}.${n.table_name}`));
+    const allStreams = new Set(nodes.map((n) => n.fqn || `${n.table_catalog}.${n.table_schema}.${n.table_name}`));
+    return edges.filter((e) => visible.has(e.target) && (visible.has(e.source) || !allStreams.has(e.source)));
+  }, [edges, nodes, filtered, freshFilter]);
+
   // KPI rollups across the discovered streams.
   const kpis = useMemo(() => {
     const byFresh = { fresh: 0, lagging: 0, stale: 0, unknown: 0 };
@@ -311,7 +321,7 @@ export function StreamingTopologyPanel({ catalog = "" }: Props) {
             </div>
 
             {tab === "topology" ? (
-              <StreamTopologyGraph nodes={filtered} edges={edges} metrics={metrics} onSelect={goTableLineage} />
+              <StreamTopologyGraph nodes={filtered} edges={filteredEdges} metrics={metrics} onSelect={goTableLineage} />
             ) : (
               <MetricsTable nodes={filtered} metrics={metrics} loading={metricsLoading} />
             )}
@@ -360,6 +370,12 @@ function MetricsTable({
   metrics: Record<string, StreamPipelineMetrics>;
   loading: boolean;
 }) {
+  // Throughput/backlog/trend are pipeline-level (a pipeline can write several
+  // streams), so show them once per pipeline — repeating them on every stream of
+  // the same pipeline would invite an operator to sum duplicates. Status +
+  // freshness stay per row (freshness is genuinely per-stream).
+  const shownPipelines = new Set<string>();
+  const pipelineTip = "Pipeline-level metric — shown once per producing pipeline (a pipeline can write several streams)";
   return (
     <div className="bg-white/[0.02] border border-white/[0.06] rounded-xl overflow-x-auto">
       <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-2">
@@ -374,9 +390,9 @@ function MetricsTable({
             <th className="text-left px-4 py-2 font-medium">Freshness</th>
             <th className="text-left px-4 py-2 font-medium">Pipeline</th>
             <th className="text-left px-4 py-2 font-medium">Status</th>
-            <th className="text-right px-4 py-2 font-medium">Throughput</th>
-            <th className="text-right px-4 py-2 font-medium">Backlog</th>
-            <th className="text-left px-4 py-2 font-medium">Trend</th>
+            <th className="text-right px-4 py-2 font-medium" title={pipelineTip}>Throughput</th>
+            <th className="text-right px-4 py-2 font-medium" title={pipelineTip}>Backlog</th>
+            <th className="text-left px-4 py-2 font-medium" title={pipelineTip}>Trend</th>
             <th className="px-2 py-2" />
           </tr>
         </thead>
@@ -386,6 +402,9 @@ function MetricsTable({
             const m = n.pipeline_id ? metrics[n.pipeline_id] : undefined;
             const status = STATUS_META[m?.status || "unknown"];
             const fresh = (n.freshness || "unknown") as StreamFreshness;
+            // Only the first stream of each pipeline shows its pipeline-level metrics.
+            const firstForPipeline = !n.pipeline_id || !shownPipelines.has(n.pipeline_id);
+            if (n.pipeline_id) shownPipelines.add(n.pipeline_id);
             return (
               <tr key={i} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
                 <td className="px-4 py-2.5">
@@ -412,10 +431,14 @@ function MetricsTable({
                   </span>
                 </td>
                 <td className="px-4 py-2.5 text-right text-slate-300">
-                  {m?.throughput_rows != null ? `${m.throughput_rows.toLocaleString()} rows` : <span className="text-slate-600">—</span>}
+                  {!firstForPipeline ? (
+                    <span className="text-slate-600" title="Shown on this pipeline's first stream">↳ pipeline</span>
+                  ) : m?.throughput_rows != null ? `${m.throughput_rows.toLocaleString()} rows` : <span className="text-slate-600">—</span>}
                 </td>
                 <td className="px-4 py-2.5 text-right">
-                  {m?.backlog_records != null ? (
+                  {!firstForPipeline ? (
+                    <span className="text-slate-600" title="Shown on this pipeline's first stream">↳</span>
+                  ) : m?.backlog_records != null ? (
                     <span className={m.backlog_records > 0 ? "text-amber-300" : "text-slate-400"}>
                       {m.backlog_records.toLocaleString()}
                     </span>
@@ -424,7 +447,7 @@ function MetricsTable({
                   )}
                 </td>
                 <td className="px-4 py-2.5">
-                  <Sparkline values={m?.trend || []} />
+                  {firstForPipeline ? <Sparkline values={m?.trend || []} /> : <span className="text-slate-600 text-[10px]">—</span>}
                 </td>
                 <td className="px-2 py-2.5 text-right">
                   <div className="flex items-center gap-1 justify-end">
