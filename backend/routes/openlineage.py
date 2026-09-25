@@ -26,10 +26,11 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from databricks.sdk.service.sql import StatementState
 from backend.lineage_service import _get_client, get_table_lineage, get_schema_column_lineage
 from backend.validators import _validate, redact_url, require_admin, sql_str
+from backend import openlineage_builder as olb
 
 logger = logging.getLogger(__name__)
 
@@ -109,97 +110,169 @@ def _build_openlineage_run_event(
     }
 
 
+def _app_host() -> Optional[str]:
+    """Workspace host for the OpenLineage dataset namespace (fail-open)."""
+    try:
+        return _get_client().config.host
+    except Exception:
+        return None
+
+
+def _dq_rules_for_scope(catalog: str, schema: Optional[str]) -> dict[str, list[dict]]:
+    """Map table_fqn -> [rule dicts] for tables in scope. Fail-open (empty)."""
+    fqn_prefix = f"{catalog}.{schema}." if schema else f"{catalog}."
+    dq_table = f"{LINEAGE_CATALOG}.{LINEAGE_SCHEMA_NAME}.dq_rules"
+    out: dict[str, list[dict]] = {}
+    try:
+        rows = _execute_sql(
+            f"SELECT table_fqn, column_name, rule_type, expression, severity "
+            f"FROM {dq_table} WHERE table_fqn LIKE '{sql_str(fqn_prefix)}%'"
+        )
+        for r in rows:
+            out.setdefault(r.get("table_fqn", ""), []).append(r)
+    except Exception as e:
+        logger.debug(f"openlineage export: DQ rules unavailable: {e}")
+    return out
+
+
 @router.get("/api/export/openlineage")
 async def export_openlineage(
     request: Request,
     catalog: str = Query(...),
     schema: Optional[str] = Query(None),
+    # Facet toggles — let the caller choose payload richness. Defaults emit the
+    # canonical, high-value facets; DQ + SQL are opt-in (extra queries / size).
+    include_schema: bool = Query(True),
+    include_column_lineage: bool = Query(True),
+    include_ownership: bool = Query(True),
+    include_docs: bool = Query(True),
+    include_data_quality: bool = Query(False),
+    event_type: str = Query("COMPLETE"),
+    format: str = Query("json"),  # json | ndjson
+    # Back-compat: the old param name still turns column facets on.
     include_columns: bool = Query(False),
 ):
-    """Export lineage graph as OpenLineage RunEvents JSON.
+    """Export the lineage graph as canonical OpenLineage 2.0.2 RunEvents.
 
-    Each table-to-table edge (via a producing entity) becomes one RunEvent
-    with inputs/outputs mapped to OpenLineage Datasets.
+    One RunEvent per (producing entity → output table): the entity's input
+    tables become OpenLineage inputs, the output table becomes the output, and
+    each output dataset is enriched with SchemaDatasetFacet, ColumnLineageDataset-
+    Facet, documentation/ownership/symlinks and (opt-in) an app DQ-rules facet.
+
+    `format=ndjson` streams one event per line (the shape Marquez/DataHub/Atlan/
+    OpenMetadata ingestion clients expect); `format=json` returns a wrapper with
+    a conformance report for previewing in the UI.
     """
+    if event_type.upper() not in olb.VALID_EVENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"event_type must be one of {', '.join(olb.VALID_EVENT_TYPES)}",
+        )
+    if format not in ("json", "ndjson"):
+        raise HTTPException(status_code=400, detail="format must be 'json' or 'ndjson'")
+    want_columns = include_column_lineage or include_columns
+
     try:
         lineage = await asyncio.to_thread(get_table_lineage, catalog, schema, False)
+        namespace = olb.dataset_namespace(_app_host())
 
-        # Build a lookup of node IDs to table info
-        table_nodes = {}
-        entity_nodes = {}
+        # Table-node lookup by full name + node id, and entity input/output sets.
+        table_by_id: dict[str, object] = {}
+        table_by_fqn: dict[str, object] = {}
+        entity_by_id: dict[str, object] = {}
         for node in lineage.nodes:
-            if getattr(node, "node_type", None) == "table":
-                table_nodes[node.id] = node
-            elif getattr(node, "node_type", None) == "entity":
-                entity_nodes[node.id] = node
+            nt = getattr(node, "node_type", None)
+            if nt == "table":
+                table_by_id[node.id] = node
+                table_by_fqn[getattr(node, "full_name", node.id)] = node
+            elif nt == "entity":
+                entity_by_id[node.id] = node
 
-        # Convert edges to OpenLineage events
-        events = []
-        # Group edges by target: find source→entity→target patterns
+        # entity id -> {inputs: set[fqn], outputs: set[fqn]}
+        io: dict[str, dict[str, set]] = {}
         for edge in lineage.edges:
-            src_node = table_nodes.get(edge.source) or entity_nodes.get(edge.source)
-            tgt_node = table_nodes.get(edge.target) or entity_nodes.get(edge.target)
+            src, tgt = edge.source, edge.target
+            if src in table_by_id and tgt in entity_by_id:  # table -> entity (input)
+                io.setdefault(tgt, {"inputs": set(), "outputs": set()})["inputs"].add(
+                    getattr(table_by_id[src], "full_name", ""))
+            elif src in entity_by_id and tgt in table_by_id:  # entity -> table (output)
+                io.setdefault(src, {"inputs": set(), "outputs": set()})["outputs"].add(
+                    getattr(table_by_id[tgt], "full_name", ""))
 
-            # Only emit events for table→entity or entity→table edges
-            if src_node and tgt_node:
-                if getattr(src_node, "node_type", None) == "table" and getattr(tgt_node, "node_type", None) == "entity":
-                    # Source table feeding into an entity - collect
-                    pass
-                elif getattr(src_node, "node_type", None) == "entity" and getattr(tgt_node, "node_type", None) == "table":
-                    # Entity producing a target table
-                    parts = tgt_node.id.replace("table:", "").split(".")
-                    if len(parts) == 3:
-                        output_ds = _table_to_openlineage_dataset(parts[0], parts[1], parts[2])
-                        # Find all inputs for this entity
-                        input_datasets = []
-                        for e2 in lineage.edges:
-                            if e2.target == src_node.id:
-                                input_node = table_nodes.get(e2.source)
-                                if input_node:
-                                    inp_parts = input_node.id.replace("table:", "").split(".")
-                                    if len(inp_parts) == 3:
-                                        input_datasets.append(
-                                            _table_to_openlineage_dataset(inp_parts[0], inp_parts[1], inp_parts[2])
-                                        )
-
-                        event = _build_openlineage_run_event(
-                            source_tables=input_datasets,
-                            target_table=output_ds,
-                            entity_type=getattr(src_node, "entity_type", "JOB"),
-                            entity_id=getattr(src_node, "entity_id", "unknown"),
-                            event_time=datetime.now(timezone.utc).isoformat(),
-                        )
-                        events.append(event)
-
-        # Optionally add column-level facets
-        if include_columns and schema:
+        # Column lineage: target_fqn -> {target_col -> [{namespace, name, field}]}
+        col_map: dict[str, dict[str, list[dict]]] = {}
+        if want_columns and schema:
             try:
                 col_lineage = await asyncio.to_thread(get_schema_column_lineage, catalog, schema, False)
-                # Add SchemaDatasetFacet to outputs where we have column info
-                for event in events:
-                    for output in event.get("outputs", []):
-                        table_name = output.get("name", "")
-                        col_fields = []
-                        if hasattr(col_lineage, "edges"):
-                            for ce in col_lineage.edges:
-                                if table_name in str(getattr(ce, "target_table", "")):
-                                    col_fields.append({
-                                        "name": getattr(ce, "target_column", "unknown"),
-                                        "type": "STRING",
-                                    })
-                        if col_fields:
-                            output["facets"]["schema"] = {
-                                "_producer": OPENLINEAGE_PRODUCER,
-                                "_schemaURL": OPENLINEAGE_SCHEMA_URL + "#/$defs/SchemaDatasetFacet",
-                                "fields": col_fields,
-                            }
+                for ce in getattr(col_lineage, "edges", []) or []:
+                    tgt_fqn = getattr(ce, "target_table", "")
+                    src_fqn = getattr(ce, "source_table", "")
+                    tgt_col = getattr(ce, "target_column", "")
+                    src_col = getattr(ce, "source_column", "")
+                    if not (tgt_fqn and tgt_col and src_fqn and src_col):
+                        continue
+                    col_map.setdefault(tgt_fqn, {}).setdefault(tgt_col, []).append(
+                        {"namespace": namespace, "name": src_fqn, "field": src_col})
             except Exception as e:
-                logger.debug(f"Column facets unavailable: {e}")
+                logger.debug(f"openlineage export: column lineage unavailable: {e}")
 
-        return JSONResponse(
-            content={"events": events, "count": len(events), "schemaURL": OPENLINEAGE_SCHEMA_URL},
-            headers={"Content-Type": "application/json"},
-        )
+        dq_map = await asyncio.to_thread(_dq_rules_for_scope, catalog, schema) if include_data_quality else {}
+
+        def _dataset(fqn: str) -> Optional[dict]:
+            parts = fqn.split(".")
+            if len(parts) != 3:
+                return None
+            node = table_by_fqn.get(fqn)
+            return olb.build_dataset(
+                namespace, parts[0], parts[1], parts[2],
+                columns=(getattr(node, "columns", []) if (node and include_schema) else []),
+                comment=(getattr(node, "comment", None) if (node and include_docs) else None),
+                owner=(getattr(node, "owner", None) if (node and include_ownership) else None),
+                column_lineage=(col_map.get(fqn) if want_columns else None),
+                dq_rules=(dq_map.get(fqn) if include_data_quality else None),
+            )
+
+        events: list[dict] = []
+        for ent_id, sets in io.items():
+            ent = entity_by_id.get(ent_id)
+            entity_type = getattr(ent, "entity_type", "JOB") if ent else "JOB"
+            entity_key = getattr(ent, "entity_id", ent_id) if ent else ent_id
+            last_run = getattr(ent, "last_run", None) if ent else None
+            when = last_run or olb.now_iso()
+            inputs = [d for d in (_dataset(f) for f in sorted(sets["inputs"])) if d]
+            job_name = f"{str(entity_type).lower()}/{entity_key}"
+            for out_fqn in sorted(sets["outputs"]):
+                out_ds = _dataset(out_fqn)
+                if not out_ds:
+                    continue
+                events.append(olb.build_run_event(
+                    event_type=event_type,
+                    job_namespace="databricks",
+                    job_name=job_name,
+                    event_time=when,
+                    job_facets={"jobType": olb.job_type_facet(str(entity_type))},
+                    run_facets={"nominalTime": olb.nominal_time_run_facet(when)},
+                    inputs=inputs,
+                    outputs=[out_ds],
+                ))
+
+        if format == "ndjson":
+            body = "\n".join(json.dumps(e) for e in events)
+            return PlainTextResponse(
+                content=body,
+                media_type="application/x-ndjson",
+                headers={"Content-Disposition": f'attachment; filename="openlineage_{catalog}.ndjson"'},
+            )
+
+        conformance = olb.validate_events(events)
+        return JSONResponse(content={
+            "events": events,
+            "count": len(events),
+            "namespace": namespace,
+            "schemaURL": olb.SCHEMA_URL,
+            "conformance": conformance,
+            "byte_size": len(json.dumps(events)),
+        })
     except HTTPException:
         raise
     except Exception as e:

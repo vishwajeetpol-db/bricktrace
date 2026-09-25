@@ -77,9 +77,13 @@ class TestExport:
         assert resp.status_code == 200
         data = resp.json()
         assert data["count"] == 1
+        # Canonical OpenLineage names are fully-qualified (catalog.schema.table),
+        # not the bare table name — that's what lets consumers dedupe datasets.
         ev = data["events"][0]
-        assert ev["outputs"][0]["name"] == "tgt"
-        assert any(i["name"] == "src" for i in ev["inputs"])
+        assert ev["outputs"][0]["name"] == "cat.sch.tgt"
+        assert any(i["name"] == "cat.sch.src" for i in ev["inputs"])
+        # Export carries a conformance report and it should pass for a clean graph.
+        assert data["conformance"]["valid"] is True
 
     def test_export_with_columns(self, app_client):
         col = ColumnLineageResponse(edges=[ColumnLineageEdge(
@@ -93,8 +97,11 @@ class TestExport:
                 "catalog": "cat", "schema": "sch", "include_columns": True})
         assert resp.status_code == 200
         ev = resp.json()["events"][0]
-        # schema facet added because target column matched
-        assert "schema" in ev["outputs"][0]["facets"]
+        # ColumnLineageDatasetFacet maps the output column to its input field.
+        cl = ev["outputs"][0]["facets"]["columnLineage"]
+        assert "tc1" in cl["fields"]
+        assert cl["fields"]["tc1"]["inputFields"][0]["field"] == "c1"
+        assert cl["fields"]["tc1"]["inputFields"][0]["name"] == "cat.sch.src"
 
     def test_export_columns_error_swallowed(self, app_client):
         with patch("backend.routes.openlineage.get_table_lineage",
