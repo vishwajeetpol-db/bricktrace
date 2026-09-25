@@ -220,6 +220,29 @@ export interface SharingOverlay {
   available: boolean;
 }
 
+// Business-glossary overlay for a lineage scope — term links + domain colors
+// per table, so the graph can paint term chips onto table nodes.
+export interface GlossaryOverlayTerm {
+  term_id: string;
+  name: string;
+  domain: string | null;
+  domain_color: string | null;
+  column: string | null;
+  status: string | null;
+}
+export interface GlossaryOverlayEntry {
+  table: string;
+  terms: GlossaryOverlayTerm[];
+  domains: string[];
+}
+export interface GlossaryOverlay {
+  catalog: string;
+  schema: string | null;
+  overlay: GlossaryOverlayEntry[];
+  table_count: number;
+  kpis: { kpi_id: string; name: string; formula_sql: string; source_tables: string; domain: string; granularity: string }[];
+}
+
 export interface SharingOverview {
   shares: { share_name: string; owner: string | null; comment: string | null; num_tables: number; recipients: string[] }[];
   recipients: { recipient_name: string; authentication_type: string | null; owner: string | null; comment: string | null }[];
@@ -900,6 +923,13 @@ export const api = {
     ),
 
   getSharingOverview: () => fetchJson<SharingOverview>(`${BASE}/sharing/overview`),
+
+  // Business-glossary overlay for a lineage scope (omit schema for catalog-wide).
+  getGlossaryOverlay: (catalog: string, schema?: string) =>
+    fetchJson<GlossaryOverlay>(
+      `${BASE}/glossary/lineage-overlay?catalog=${encodeURIComponent(catalog)}` +
+      (schema ? `&schema=${encodeURIComponent(schema)}` : "")
+    ),
 
   getEntityName: (entityType: string, entityId: string) =>
     fetchJson<{ name: string; owner?: string }>(

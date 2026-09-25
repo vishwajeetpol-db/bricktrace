@@ -1,7 +1,7 @@
 import { memo, useCallback, useMemo, useRef } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import { motion, AnimatePresence } from "framer-motion";
-import { Database, Eye, Layers, ChevronDown, Key, ExternalLink, HardDrive, FolderOpen, Zap, Share2, Building2, Microscope } from "lucide-react";
+import { Database, Eye, Layers, ChevronDown, Key, ExternalLink, HardDrive, FolderOpen, Zap, Share2, Building2, Microscope, Tag } from "lucide-react";
 import { useLineageStore } from "../../store/lineageStore";
 import { useTransformStore } from "../../store/transformStore";
 import { businessTableLabel, businessDescription, humanizeName } from "../../lib/businessView";
@@ -12,6 +12,13 @@ import type { TableNode as TableNodeType } from "../../api/client";
 export type SharingBadge = {
   out?: { shares: string[]; recipients: string[] };
   in?: { provider: string; shares: string[] };
+};
+
+// Injected by the Business-glossary overlay (see LineageCanvas). Optional — only
+// present when the Terms toggle is on and this table carries linked terms.
+export type GlossaryBadge = {
+  terms: { name: string; column: string | null; domain_color: string | null }[];
+  domainColor: string | null;
 };
 
 const typeConfig: Record<string, { color: string; bg: string; border: string; icon: typeof Database; label: string; dot: string }> = {
@@ -26,7 +33,7 @@ const typeConfig: Record<string, { color: string; bg: string; border: string; ic
   PATH: { color: "text-orange-400", bg: "bg-orange-500/10", border: "border-orange-500/25", icon: HardDrive, label: "STORAGE", dot: "bg-orange-400" },
 };
 
-function TableNodeComponent({ data, id }: NodeProps<TableNodeType & { isExpanded: boolean; isSelected: boolean; isHighlighted: boolean; isDimmed: boolean; isRevealed?: boolean; sharingBadge?: SharingBadge }>) {
+function TableNodeComponent({ data, id }: NodeProps<TableNodeType & { isExpanded: boolean; isSelected: boolean; isHighlighted: boolean; isDimmed: boolean; isRevealed?: boolean; sharingBadge?: SharingBadge; glossaryBadge?: GlossaryBadge }>) {
   // Field selectors, NOT whole-store destructuring: a table node must re-render
   // only when column mode / selected column change — not on every hover/select/
   // loading change. With hundreds of nodes, whole-store subscription = every node
@@ -165,6 +172,30 @@ function TableNodeComponent({ data, id }: NodeProps<TableNodeType & { isExpanded
       {businessView && (
         <div className="px-4 pb-2.5 -mt-1 text-[11px] leading-snug text-slate-400 font-sans">
           {businessDescription(data)}
+        </div>
+      )}
+
+      {/* Business-glossary term chips — only when the Terms overlay is on and
+          this table carries linked terms. Domain color tints each chip. */}
+      {data.glossaryBadge && data.glossaryBadge.terms.length > 0 && (
+        <div className="px-4 pb-3 -mt-1 flex flex-wrap items-center gap-1">
+          {data.glossaryBadge.terms.slice(0, 4).map((t, i) => {
+            const c = t.domain_color || "#FF7A5C";
+            return (
+              <span
+                key={`${t.name}-${i}`}
+                className="flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.5 rounded-full border"
+                style={{ color: c, backgroundColor: `${c}1a`, borderColor: `${c}40` }}
+                title={t.column ? `${t.name} (${t.column})` : t.name}
+              >
+                <Tag size={8} />
+                {t.name}{t.column ? `·${t.column}` : ""}
+              </span>
+            );
+          })}
+          {data.glossaryBadge.terms.length > 4 && (
+            <span className="text-[9px] font-semibold text-slate-500">+{data.glossaryBadge.terms.length - 4}</span>
+          )}
         </div>
       )}
 
