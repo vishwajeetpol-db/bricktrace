@@ -12,7 +12,7 @@ import { DQMetricsPanel } from "./components/DQMetricsPanel";
 import { GlossaryPanel } from "./components/GlossaryPanel";
 import { NotificationsPanel } from "./components/NotificationsPanel";
 import { ExportPanel } from "./components/ExportPanel";
-import { RootCauseWizard } from "./components/RootCauseWizard";
+import { ReportsHub } from "./components/reports/ReportsHub";
 import TableLineageWorkspace from "./components/table-lineage/TableLineageWorkspace";
 import { BiConsumersPanel } from "./components/BiConsumersPanel";
 import { StreamingTopologyPanel } from "./components/StreamingTopologyPanel";
@@ -20,7 +20,10 @@ import CatalogListView from "./components/browse/CatalogListView";
 import SchemaListView from "./components/browse/SchemaListView";
 import TableListView from "./components/browse/TableListView";
 import PageShell from "./components/browse/PageShell";
+import SideNav from "./components/layout/SideNav";
 import { useLineageStore } from "./store/lineageStore";
+import { useFeatureFlagStore, useFeatureFlagEnabled } from "./store/featureFlagStore";
+import { getFeatureFlags } from "./api/controlPanel";
 import { api, setLiveMode } from "./api/client";
 import { useRouter, goLineage, goLanding } from "./hooks/useRouter";
 import { useRecents } from "./hooks/useRecents";
@@ -37,6 +40,7 @@ export default function App() {
   const schema = useLineageStore((s) => s.schema);
   const liveMode = useLineageStore((s) => s.liveMode);
   const isAdmin = useLineageStore((s) => s.isAdmin);
+  const hideDataQuality = useFeatureFlagEnabled("metadata_only.hide_data_quality");
   const retryCount = useRef(0);
   const lineageAbortRef = useRef<AbortController | null>(null);
 
@@ -45,6 +49,13 @@ export default function App() {
     api.getUserInfo()
       .then((info) => useLineageStore.getState().setIsAdmin(info.isAdmin))
       .catch(() => useLineageStore.getState().setIsAdmin(false));
+  }, []);
+
+  // Load feature flags app-wide so the nav + routes can honour metadata-only toggles.
+  useEffect(() => {
+    getFeatureFlags()
+      .then((r) => useFeatureFlagStore.getState().setFlags(r.flags))
+      .catch(() => { /* nav falls back to showing everything */ });
   }, []);
 
   // R5: Check system-table / SP-grant health on mount and surface as a banner
@@ -239,7 +250,7 @@ export default function App() {
     return <ControlPanel open={true} onClose={goLanding} />;
   }
 
-  if (route.view === "dq") {
+  if (route.view === "dq" && !hideDataQuality) {
     return (
       <>
         <PageShell subtitle="Column-level data quality metrics" bare>
@@ -288,8 +299,10 @@ export default function App() {
   if (route.view === "rootCause") {
     return (
       <>
-        <PageShell subtitle="Root-cause analysis" bare>
-          <RootCauseWizard />
+        <PageShell subtitle="Reports" bare>
+          <div className="max-w-6xl mx-auto px-8 py-8">
+            <ReportsHub onSelectTable={handleSelectTable} />
+          </div>
         </PageShell>
         <GlobalSearch onSelectTable={handleSelectTable} />
       </>
@@ -326,10 +339,13 @@ export default function App() {
     return (
       <>
         <ReactFlowProvider>
-          <div className="h-screen w-screen flex flex-col overflow-hidden bg-surface">
-            <Toolbar onGenerate={handleGenerate} />
-            <div className="flex-1 relative">
-              <LineageCanvas />
+          <div className="h-screen w-screen flex overflow-hidden bg-surface">
+            <SideNav initialCollapsed />
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+              <Toolbar onGenerate={handleGenerate} />
+              <div className="flex-1 relative">
+                <LineageCanvas />
+              </div>
             </div>
           </div>
         </ReactFlowProvider>

@@ -25,7 +25,7 @@
 | # | Capability | Status | Primary Files | Route(s) | Notes |
 |---|-----------|--------|---------------|----------|-------|
 | 01 | Automatic Discovery | HAVE | `routes/external_sources.py`, `federated_service.py` | `POST /api/external/dbt/import`, `/api/external/airflow/import`, `/api/external/discover`, `GET /api/lineage/federated-overlay` | dbt manifest + Airflow DAG import + manual registration + foreign catalog crawl |
-| 02 | End-to-End Lineage | HAVE | `routes/external_sources.py`, `routes/capability_closures.py` | `/api/lineage/bi-consumers`, `/api/lineage/streaming-topology` | BI tool detection via query history user-agents + streaming table topology + dbt/Airflow + federated + Delta Sharing |
+| 02 | End-to-End Lineage | HAVE | `routes/external_sources.py`, `routes/capability_closures.py` | `/api/lineage/bi-consumers`, `/api/lineage/streaming-topology`, `/api/lineage/streaming-metrics` | BI tool detection via query history user-agents + **streaming topology (enriched: source-kind, producing pipeline, freshness) with a live metrics dashboard (status/throughput/backlog/DQ)** + dbt/Airflow + federated + Delta Sharing |
 | 03 | Column-Level Lineage | HAVE | `sublineage/backtrack.py`, `transform_service.py` | `GET /api/sublineage` | — |
 | 04 | Transformation Logic | HAVE | `transform_service.py`, `build_service.py`, `plan_capture/` | `GET /api/transform`, `POST /api/analyze-producer` | — |
 | 05 | Multi-Platform | HAVE | `routes/external_sources.py` (ol-bridge section), `federated_service.py` | `POST /api/external/ol-bridge/register`, `POST /api/external/ol-bridge/ingest/{source_id}`, `GET /api/external/ol-bridge/sources`, `GET /api/external/ol-bridge/events`, `GET /api/lineage/federated-overlay` | OL producer bridge: external OL-emitting platforms (Snowflake Horizon, BigQuery via OL proxy, Spark + openlineage-spark, Flink, dbt Cloud, Airflow 2.7+) register once and push standard RunEvents to a dedicated receive URL; edges stored in `external_ol_bridge_events` and surfaced in the lineage graph |
@@ -33,14 +33,14 @@
 | 07 | Versioned Lineage | HAVE | `routes/graph_snapshots.py`, `routes/capability_closures.py` | `POST /api/snapshots/capture`, `GET /api/snapshots/diff`, `POST /api/snapshots/auto-capture`, `GET /api/snapshots/timeline` | On-demand + scheduled capture, diff viewer, growth timeline |
 | 08 | Impact Analysis | HAVE | `routes/impact.py`, `server/entities.py`, `components/table-lineage/ImpactPanel.tsx` | `GET /api/impact` | v2.5.5: `_consumers()` now returns the entities (dashboards/jobs/pipelines) that READ the focus + downstream tables, grouped by type + resolved to display names & deep links (via `resolve_entities`); panel renders clickable consumer chips |
 | 09 | Root Cause Analysis | HAVE | `server/root_cause.py`, `routes/root_cause.py`, `components/table-lineage/RootCausePanel.tsx` | `POST /api/root-cause/analyze`, `GET /api/root-cause/trace` | v2.5.5: added `trace_root_cause_table()` + `GET /api/root-cause/trace` — health-based table-level trace (upstream table walk → producer run health failed/stale/healthy/no-history → prime suspect + failure path), auto-run on table select. Column-level `analyze` (BFS + failed runs + DQ) unchanged |
-| 10 | Business Lineage | HAVE| `routes/glossary.py` | `/api/glossary/terms`, `/api/glossary/domains`, `/api/glossary/kpis`, `/api/glossary/link`, `/api/glossary/propagate-suggestions`, `/api/glossary/lineage-overlay` | Full glossary: term CRUD + domains + KPIs + term→table/column linking + downstream propagation suggestions + lineage graph overlay |
+| 10 | Business Lineage | HAVE| `routes/glossary.py`, `components/GlossaryPanel.tsx`, `components/graph/{LineageCanvas,TableNode}.tsx` | `/api/glossary/terms`, `/api/glossary/domains`, `/api/glossary/kpis`, `/api/glossary/link`, `/api/glossary/for-table`, `/api/glossary/propagate-suggestions`, `/api/glossary/lineage-overlay` | Full glossary backend: term CRUD + domains + KPIs + term→table/column linking + downstream propagation suggestions + lineage overlay. **UI revamp (commits `71a45d4`+`7da3952`)**: `GlossaryPanel` is now a brand-token hub (KPI strip, Terms/Domains/KPIs/Propagation tabs) wiring the previously-unused endpoints — expand a term to see/add linked assets, KPI + domain editors, and a **term-propagation wizard** (source table → downstream suggestions → one-click apply). A **"Terms" overlay toggle** on the lineage graph (`api.getGlossaryOverlay` → per-table `glossaryBadge`) paints domain-colored term chips onto table nodes |
 | 11 | Data Quality | HAVE | `routes/dq.py`, `routes/capability_closures.py` | `/api/dq-rules/metrics`, `/api/dq-rules/trends`, `/api/dq-rules/pipeline-expectations`, `/api/dq-rules/propagation` | Live metrics + trend history + pipeline expectation sync + upstream propagation |
 | 12 | Governance | HAVE | `routes/governance.py`, `server/governance.py`, `components/table-lineage/GovernancePanel.tsx` | `GET /api/governance`, `GET\|POST\|DELETE /api/governance/config` | v2.5.5: response adds `table_type`/`created_by`/`last_altered`; new `DELETE /api/governance/config` + `delete_governance_rule()`; panel manages classification rules (column-pattern + UC-tag → sensitivity), admin-gated |
 | 13 | Security & Access | HAVE | `routes/access.py`, `server/access.py`, `components/table-lineage/AccessPanel.tsx` | `GET /api/access` | v2.5.5: grants now via `information_schema.table_privileges` (SP-readable, not `SHOW GRANTS`); audit query uses `service_name='unityCatalog'` + `event_date` partition + `request_params['full_name_arg']`; single audit scan feeds both the accessor rollup and the recent-events feed; identities (owner/created_by/last_altered) + reads/writes counts; `_execute_sql` now polls past the 50s cap |
 | 14 | AI/ML Lineage | HAVE | `routes/ml.py`, `server/ml.py`, `components/table-lineage/MLModelsPanel.tsx` | `/api/ml/endpoints`, `/api/ml/models-for-table`, `/api/ml/feature-tables`, `/api/ml/vector-indexes`, `/api/ml/vector-lineage`, `/api/ml/prompt-lineage` | v2.5.5: `get_models_for_table()` now derives models LIVE from the UC Model Registry → model versions → MLflow run `dataset_inputs` (with the app-owned `model_lineage` table as fallback); panel shows serving-endpoint status per model. Serving endpoints + feature store + vector + prompt + registry unchanged |
 | 15 | Interactive Viz | HAVE | `frontend/dist/` (React+ELK.js) | static serving | — |
 | 16 | Search & Discovery | HAVE | `routes/search.py`, `routes/discovery.py` | `/api/search`, `/api/discover/*` | — |
-| 17 | Open Standards | HAVE| `routes/openlineage.py` | `GET /api/export/openlineage`, `POST /api/import/openlineage`, `POST /api/openlineage/producer/produce`, `GET /api/openlineage/producer/events` | Full bidirectional: export + ingest + live producer (detects writes → queues OL events → configured endpoints deliver) |
+| 17 | Open Standards | PARTIAL | `openlineage_builder.py`, `routes/openlineage.py` | `GET /api/export/openlineage`, `POST /api/import/openlineage`, `POST /api/openlineage/producer/produce`, `GET /api/openlineage/producer/events` | **Export is spec-compliant OpenLineage 2.0.2** (Phase 1, commit `35bb616`): canonical `databricks://<host>` namespace + fully-qualified names, real `SchemaDatasetFacet` + `ColumnLineageDatasetFacet` + docs/ownership/symlinks/dataSource + opt-in DQ facet, UUIDv5 run ids, conformance report, JSON/ND-JSON — all via the pure `openlineage_builder.py`. **Import + producer delivery are STUBS**: `import_openlineage` writes to `external_lineage_events` but nothing reads it back into the graph; `produce_events` queues to `openlineage_producer_queue` but no worker delivers it. Full spec + roadmap in **`docs/OPENLINEAGE_CAPABILITY.md`** (Phase 1 done; Phase 2 delivery/round-trip + Phase 3 presets/formats/scheduling/Kafka pending). NB the OL **bridge** (Cap 05) is a separate, working external-ingestion path |
 | 18 | Scalability | HAVE | `routes/scalability.py`, `cache_service.py`, `perf_patches.py`, `main.py` | `GET /api/scalability/graph`, `GET /api/scalability/cache/stats`, `POST /api/scalability/cache/invalidate`, `GET /api/scalability/health` | Delta-backed distributed cache (shared across replicas, no Redis needed) + BFS cursor-paginated graph (removes 400-node cap) + parallel catalog enumeration + 8-worker pool |
 | 19 | Observability | HAVE | `routes/observability.py` | `GET /api/observability` | — |
 | 20 | Notifications | HAVE | `routes/notifications.py`, `routes/capability_closures.py` | `/api/notifications/scan`, `/api/notifications/webhooks`, `/api/notifications/enqueue-delivery` | Detection (schema/DQ/sensitive) + alert rules + webhook registration + delivery queue |
@@ -110,6 +110,7 @@
 | Root Cause + DQ | `backend/server/root_cause.py` | BFS walk → failed runs + DQ rule violations |
 | Capability Closures | `backend/routes/capability_closures.py` | BI consumers, streaming topology, auto-snapshots, DQ trends, webhooks |
 | OL Bridge | `backend/routes/external_sources.py` (ol-bridge section) | Register → receive URL → external platform pushes OL RunEvents → `external_ol_bridge_events` |
+| OpenLineage builder | `backend/openlineage_builder.py` | Pure OL 2.0.2 facet/event builders + structural conformance validator; no warehouse/SDK deps (unit-tested). Used by the export route |
 | Distributed Cache | `backend/cache_service.py` | Delta-table-backed shared cache; DeltaCacheService singleton; MERGE upsert + TTL expiry |
 | Graph Pagination | `backend/routes/scalability.py` | BFS cursor-pagination (opaque base64 cursors), removes 400-node cap |
 | Perf Patches | `backend/perf_patches.py` | Side-effect import: parallel list_all_tables, parallel BFS trace, parallel cost, Delta cache wiring |
@@ -117,6 +118,16 @@
 ---
 
 ## Part D — Closure History
+
+### 2026-09 — Shared UI shell, Glossary revamp & OpenLineage Phase 1 (branch `feature/phase0-workspace-id`)
+
+| Item | Was | Now | How |
+|------|-----|-----|-----|
+| App-wide shell consistency | Screens (Browse, Lineage Explorer, DQ, Reports, Glossary, Export) used mixed old styling + a duplicate "Browse" menu | HAVE | Shared left **`SideNav`** rail + slim top bar on every screen; brand-orange `accent` token; duplicate Browse item removed. Top-right **`HeaderActions`** cluster (notifications bell + unread badge, help, theme toggle) on all screens; **Notifications removed from the menu**, reachable via the bell (commit `6e34344`). |
+| #10 Business Lineage UI | Backend endpoints existed; UI was a flat list, none of the linking/propagation/overlay endpoints wired | HAVE | Glossary hub revamp + term↔asset linking + KPI/domain editors + **propagation wizard** + graph **Terms overlay** (commits `71a45d4`, `7da3952`). See Cap 10 row + **Part I**. |
+| #17 Open Standards — export | Non-canonical namespace, faked column types (all STRING), no column-level facet, non-UUID run ids | HAVE (export) | Canonical OpenLineage 2.0.2 export via new pure `backend/openlineage_builder.py`: host-scoped namespace, real schema + `ColumnLineageDatasetFacet`, docs/ownership/symlinks facets, UUIDv5 run ids, structural conformance validator, facet toggles + JSON/ND-JSON + preview UI (commit `35bb616`). Import + producer delivery remain stubs — see **`docs/OPENLINEAGE_CAPABILITY.md`** (Phase 2/3 pending). |
+| Data Quality screen | API only | HAVE | DQ dashboard (portfolio KPIs, ring gauge, trend, per-rule/dimension charts) + a Settings "metadata-only" flag (`metadata_only.hide_data_quality`) that hides the DQ tab + its Reports card. |
+| Reports screen | Stub | HAVE | Reports card-grid hub: live Executive Overview (estate KPIs + DQ gauge + activity), Root Cause, DQ deep-link; Lineage/Governance/Cost stubbed "soon". |
 
 ### v2.6.x — Business view, precise dataset lineage & AI graph explanation
 
@@ -189,8 +200,9 @@ None — all 20 scorecard capabilities are at HAVE status.
 
 | Document | Covers | Status |
 |----------|--------|--------|
-| `lineage-capability-matrix.pdf` | 20-item scorecard | ✅ 20/20 HAVE, 0 PARTIAL, 0 GAP |
-| `FEDERATED_LINEAGE_DESIGN.docx` | Tier 1–3 federation | Tier 1, Tier 2, Tier 3 (glossary implemented) |
+| `lineage-capability-matrix.pdf` | 20-item scorecard | 19 HAVE, 1 PARTIAL (#17 export done, delivery/round-trip pending), 0 GAP |
+| `docs/OPENLINEAGE_CAPABILITY.md` | Cap 17 OpenLineage interop, all phases | Phase 1 (export) done; Phase 2 (delivery + import round-trip) + Phase 3 (presets/formats/scheduling/Kafka) TO BE IMPLEMENTED |
+| `docs/FEDERATED_LINEAGE_DESIGN.md` | Cross-workspace (same-metastore) federation | Phase 0 + Phase 2 code complete (readable companion; supersedes the old `.docx`) |
 | `Column Transformation Lineage — Design Document.pdf` | LLM expression inference | `POST /api/analyze-producer` |
 | `lineage-plan-capture` project | Runtime capture + parser | `backend/plan_capture/` (mature parser) |
 
@@ -357,3 +369,63 @@ AI narrative of the on-screen graph. All additive; the technical view is unchang
 ### H5. Coverage gates after this work
 
 Backend **90.67 %** (1,482 passing); frontend **599** tests (96.4 % lines / 85.4 % branches). Both gates green.
+
+---
+
+## Part I — Shared UI shell, Glossary revamp & OpenLineage Phase 1 (2026-09, branch `feature/phase0-workspace-id`)
+
+### I1. Shared shell + top-right actions (commit `6e34344`)
+
+| File | Role |
+|---|---|
+| `frontend/src/components/layout/SideNav.tsx` | Route-aware collapsible left rail on every screen. PRIMARY (Home, Search, Lineage Explorer, Impact, Data Quality, Reports), SECONDARY (Business Glossary, OpenLineage Export, Streaming Topology, then **BI Consumers — disabled/"coming soon"** via `NavItem.disabled`), BOTTOM (Settings, Admin). Filters Data Quality via `useFeatureFlagEnabled("metadata_only.hide_data_quality")`. **Notifications removed** (moved to the bell). |
+| `frontend/src/components/layout/HeaderActions.tsx` | Top-right cluster on every screen: notifications bell (`goNotifications` + unread badge from `/api/notifications/unread-count`), help, theme toggle. |
+| `frontend/src/components/browse/PageShell.tsx` | `SideNav` + slim top bar (title + global search + `HeaderActions`); wraps most non-graph screens. |
+
+### I2. Business Glossary revamp (commits `71a45d4` + `7da3952`, Cap 10)
+
+| File | Role |
+|---|---|
+| `frontend/src/components/GlossaryPanel.tsx` | Brand-token hub. KPI strip (Glossary Terms / Approved% / Data Domains / Governed Metrics), tabs **Terms / Domains / KPIs / Propagation**, status-filter pills. Expand a term → linked assets (click → lineage) + link-to-table editor (`POST /api/glossary/link`, `/terms/{id}`). Domain + KPI editors (`POST /domains`, `/kpis`). **`PropagationWizard`** (in-file): source table → `/api/glossary/propagate-suggestions` → per-term / "Apply all" `POST /link`. No framer-motion (keeps `getByRole('combobox')`/`getByText` tests robust). Admin-gated delete hidden for non-admins. |
+| `frontend/src/api/client.ts` | `GlossaryOverlay` type + `getGlossaryOverlay(catalog, schema?)` → `GET /api/glossary/lineage-overlay`. |
+| `frontend/src/components/graph/LineageCanvas.tsx` | **"Terms" overlay toggle** (top-left controls). Local state, fetch-on-toggle (scoped like the Delta Sharing overlay), builds a per-table `glossaryByTable` map, injects `glossaryBadge` into table-node data. A lens — never mutates canonical lineage. |
+| `frontend/src/components/graph/TableNode.tsx` | Renders up to 4 domain-colored term chips (`glossaryBadge`) per table, both technical + business views. Mirrors the `sharingBadge` overlay pattern. |
+
+### I3. OpenLineage Phase 1 — spec-compliant export (commit `35bb616`, Cap 17)
+
+| File | Role |
+|---|---|
+| `backend/openlineage_builder.py` | **Pure** OL 2.0.2 builders (no warehouse/SDK): `dataset_namespace` (`databricks://<host>`), `deterministic_run_id` (UUIDv5), facet builders (`schema_facet`, `column_lineage_facet`, `documentation_facet`, `ownership_facet`, `symlinks_facet`, `datasource_facet`, custom `data_quality_rules_facet`; job: `job_type_facet`, `sql_job_facet`, `source_code_facet`, `documentation_job_facet`; run: `nominal_time_run_facet`, `error_message_run_facet`), `build_dataset`, `build_run_event`, and `validate_event`/`validate_events` conformance. NB `sql`/`sourceCode`/`documentation`-job/`errorMessage` builders exist but the export route doesn't emit them yet (Phase 2 follow-on). |
+| `backend/routes/openlineage.py` | `export_openlineage` rewritten to use the builder: facet toggles (`include_schema`/`_column_lineage`/`_ownership`/`_docs`/`_data_quality`), `event_type`, `format=json\|ndjson`; JSON carries `{events, count, namespace, conformance, byte_size}`. `_dq_rules_for_scope` maps `dq_rules` per table. Import + producer endpoints unchanged (still stubs — Phase 2). |
+| `frontend/src/components/ExportPanel.tsx` | Brand-token revamp of the OpenLineage Export tab: facet toggle grid, JSON/ND-JSON picker, live **Preview** (count + KB + conformance badge + sample event), copy/download. Import (admin-only) + Snapshots tabs re-skinned. |
+| `tests/test_openlineage_builder.py` · `tests/test_routes_openlineage*.py` · `frontend/src/components/ExportPanel.test.tsx` | Builder/validator units, route (canonical names + `columnLineage` facet + conformance), UI (facet passthrough, preview, ND-JSON, conformance badge). |
+
+### I4. Gates after this work
+
+Backend **1914** passing; frontend **655** passing; `tsc` + build clean. Deployed to FEVM + Azure sandbox.
+
+---
+
+## Part J — Streaming Topology observability, transform re-parse fix & nav polish (2026-09, branch `feature/phase0-workspace-id`)
+
+### J1. Streaming Topology rebuilt into a Tiers 1–3 observability screen (commits `a0aaac5` + `4b389cc` + `f602d34`, Cap 02)
+
+| File | Role |
+|---|---|
+| `backend/routes/capability_closures.py` | **Enriched `GET /api/lineage/streaming-topology`**: each node gains `source_kind` (`_classify_stream_source` sniffs `data_source_format` + upstream source fqns — streaming tables report `UNKNOWN_DATA_SOURCE_FORMAT`), `pipeline_id`+`pipeline_name` (producer from `system.access.table_lineage` entity_type=PIPELINE; names batched once via `_pipeline_name_map` → `system.lakeflow.pipelines`), and `age_seconds`+`freshness` bucket (`_freshness`; fresh<1h / lagging<24h / stale). **New `GET /api/lineage/streaming-metrics?pipeline_ids=…`** (comma list, cap 50, uuid/identifier-validated): `_pipeline_status_batch` (one grouped query over `system.lakeflow.pipeline_update_timeline`, `MAX_BY(result_state, period_start_time)` for last state → status active/idle/stale/failed) + `_pipeline_flow_metrics` (throughput/backlog/DQ from DLT `flow_progress` events via `client.api_client.do("GET", /api/2.0/pipelines/{id}/events)` — **no server-side filter** (400s on some workspaces), 60s TTL cache `_flow_metrics_cache`, trend = last 20 `num_output_rows` oldest→newest). Everything **fails open**. Env: `STREAM_FRESH_SECONDS`, `STREAM_LAGGING_SECONDS`, `STREAM_METRICS_LOOKBACK_DAYS` (**90**, widened from 30 so stale streams still map to a producer), `STREAM_FLOW_METRICS_TTL_SECONDS`. |
+| `frontend/src/components/StreamingTopologyPanel.tsx` | KPI strip + **Topology / Metrics** tabs, freshness-filter pills, 30s "Live" auto-refresh, **fuzzy catalog typeahead** (subsequence match, keyboard-navigable), drill-down (`goTableLineage`). Metrics table: status badge, throughput, backlog, freshness age, inline SVG `Sparkline`. Chrome uses the brand **accent** (`#FF4520`), not emerald. |
+| `frontend/src/components/graph/StreamTopologyGraph.tsx` | Self-contained reactflow source→stream DAG (own instance, not the lineage store): freshness-coloured custom nodes + source-kind icons, two-column layered layout. In `graph/**` → **coverage-excluded**. |
+| `frontend/src/api/client.ts` | `getStreamingTopology` / `getStreamingMetrics` + `StreamNode`/`StreamEdge`/`StreamPipelineMetrics`/`StreamingTopologyResponse`/`StreamingMetricsResponse` types. |
+| `tests/test_routes_capability_closures.py` | `TestStreamingTopologyEnrichment`, `TestStreamingMetrics` (status buckets, cache hit, fail-open, 400/500 paths), `TestStreamingHelpers`. FE: `StreamingTopologyPanel.test.tsx` (stubs the reactflow graph — flaky in jsdom + excluded; covers metric variants, age buckets, Live toggle, fuzzy picker). |
+
+### J2. Deterministic transformation-lineage re-parse fix (commit `aee1b53`, Cap 04)
+
+`transformation_lineage/versioning/change_detection.py`: `PARSER_VERSION` bumped **5→6**. The change-detection token is `sha256("parser_v{N}\x00"+source)` and the pipeline early-terminates on unchanged tokens; an earlier parser improvement (cross-cell `.withColumn`, step-wise expressions) shipped without bumping the key, so unchanged notebooks kept the pre-fix `mapping_count=0` result forever → empty `lineage_edge_endpoints` → the panel looped on "Generate". The bump forces a one-time full re-parse. Verified live: `transactions_transformed_silver` → 11 col→col hops. `backend/transform_service.py` also gained a resolver-based backtrack fallback (`_llm_fallback_trace`) so a table with a stored analysis but no built edges still shows transformations.
+
+### J3. Navigation polish (commit `96db0f4`)
+
+`SideNav.tsx`: added reusable `NavItem.disabled` (greyed-out, `aria-disabled`, "coming soon", no navigation); **BI Consumers** (unimplemented) moved below Streaming Topology and disabled.
+
+### J4. Gates after this work
+
+Backend **1950** passing (coverage gate 91.1%); frontend **685** passing (branch gate 85.3%); `tsc` + build clean. Deployed to FEVM + Azure sandbox.

@@ -33,11 +33,14 @@ export default {
           800: "rgb(var(--slate-800) / <alpha-value>)",
           900: "rgb(var(--slate-900) / <alpha-value>)",
         },
+        // Brand accent — orange, matching the BrickTrace logo + wordmark. This is
+        // the single primary-action / active-state colour across the whole app;
+        // semantic colours (node types, pass/warn/fail) stay separate.
         accent: {
-          DEFAULT: "#6366F1",
-          light: "#818CF8",
-          dark: "#4F46E5",
-          glow: "rgba(99,102,241,0.3)",
+          DEFAULT: "#FF4520",
+          light: "#FF7A5C",
+          dark: "#E0350F",
+          glow: "rgba(255,69,32,0.3)",
         },
         purple: {
           glow: "rgba(139,92,246,0.3)",

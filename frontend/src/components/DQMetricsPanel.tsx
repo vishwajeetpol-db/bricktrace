@@ -9,7 +9,9 @@ import {
   DQPropagation,
 } from "../api/client";
 import { RingGauge, TrendLine, DimensionDonut, scoreColor, gradeColor } from "./dq/DQCharts";
+import { RuleEditor, RuleSuggestions } from "./dq/RuleEditor";
 import { dimensionForRuleType, DQ_DIMENSIONS } from "../lib/dqDimensions";
+import { buildFindings } from "../lib/dqFindings";
 
 interface Props {
   tableFqn?: string;
@@ -73,13 +75,14 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
         const m = mRes.value;
         if (m.quality_score != null) {
           const passed = m.metrics.filter((x) => x.status === "pass").length;
+          const evaluated = m.rules_evaluated ?? 0;
           api
             .recordDQMetrics({
               table_fqn: fqn,
               quality_score: m.quality_score,
-              rules_evaluated: m.rules_evaluated,
+              rules_evaluated: evaluated,
               rules_passed: passed,
-              rules_failed: m.rules_evaluated - passed,
+              rules_failed: evaluated - passed,
             })
             .catch(() => {});
         }
@@ -99,6 +102,46 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
     if (tableFqn && FQN_RE.test(tableFqn)) analyze(tableFqn);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableFqn]);
+
+  const [profileLoading, setProfileLoading] = useState(false);
+  const runLiveProfile = useCallback(async () => {
+    if (!selected) return;
+    const [c, s, t] = selected.split(".");
+    setProfileLoading(true);
+    try {
+      setProfile(await api.getColumnProfile(c, s, t, true));
+    } catch {
+      /* leave the existing (non-live) profile in place */
+    } finally {
+      setProfileLoading(false);
+    }
+  }, [selected]);
+
+  const onDeleteRule = useCallback(
+    async (ruleId: string) => {
+      try {
+        await api.deleteDQRule(ruleId);
+      } catch {
+        /* ignore — the row simply stays */
+      }
+      if (selected) analyze(selected);
+    },
+    [selected, analyze],
+  );
+
+  const profileColumnNames = useMemo(() => (profile?.columns ?? []).map((c) => c.name), [profile]);
+  const findings = useMemo(() => buildFindings(profile?.columns ?? []), [profile]);
+  const profileRowCount = useMemo(() => {
+    const fromLive = profile?.columns?.find((c) => c.total_rows != null)?.total_rows;
+    if (fromLive != null) return fromLive;
+    const raw = profile?.row_count_approx;
+    if (!raw) return null;
+    // row_count_approx can be a Delta detail string like "… , 4750000 rows".
+    const m = String(raw).match(/([\d,]+)\s*rows/);
+    if (m) return Number(m[1].replace(/,/g, ""));
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }, [profile]);
 
   // Rules to reason about: prefer live metrics, else the authored inventory.
   const ruleTypes = useMemo(
@@ -232,14 +275,20 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
                     </span>
                   ) : (
                     <span className="text-[12px] text-slate-500">
-                      {metrics ? "Partial coverage" : isAdmin ? "Run to score" : "Admin-only"}
+                      {metrics
+                        ? metrics.metrics.length === 0
+                          ? "No rules yet"
+                          : "Partial coverage"
+                        : isAdmin
+                        ? "Run to score"
+                        : "Admin-only"}
                     </span>
                   )}
                   {trends && trends.data_points.length >= 2 && (
                     <TrendBadge dir={trends.trend} />
                   )}
                 </div>
-                {metrics && (
+                {metrics && metrics.sample_size != null && (
                   <p className="text-[11px] text-slate-500 mt-1.5">
                     {metrics.rules_evaluated}/{metrics.rules_total} rules · {metrics.sample_size.toLocaleString()} rows
                   </p>
@@ -252,7 +301,7 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
               <Kpi
                 label="Passing"
                 value={metrics ? `${metrics.metrics.filter((m) => m.status === "pass").length}` : "—"}
-                sub={metrics ? `of ${metrics.rules_evaluated} run` : "run to see"}
+                sub={metrics ? `of ${metrics.rules_evaluated ?? 0} run` : "run to see"}
                 tone="good"
               />
               <Kpi
@@ -264,14 +313,39 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
               <Kpi
                 label="Coverage"
                 value={
-                  metrics && metrics.rules_total > 0
-                    ? `${Math.round((metrics.rules_evaluated / metrics.rules_total) * 100)}%`
+                  metrics && (metrics.rules_total ?? 0) > 0
+                    ? `${Math.round(((metrics.rules_evaluated ?? 0) / (metrics.rules_total as number)) * 100)}%`
                     : "—"
                 }
                 sub={metrics?.coverage_complete === false ? "incomplete" : "of rules"}
               />
             </div>
           </div>
+
+          {/* Findings — the real data issues, surfaced from the live profile */}
+          {findings.length > 0 && (
+            <div className="p-4 bg-amber-500/[0.06] rounded-xl border border-amber-500/20">
+              <div className="flex items-center gap-2 mb-2.5">
+                <span className="text-amber-400 text-[13px]">⚠</span>
+                <h3 className="text-[13px] font-semibold text-amber-300">
+                  {findings.length} data {findings.length === 1 ? "finding" : "findings"}
+                </h3>
+                <span className="text-[11px] text-slate-500">from the live column profile</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {findings.map((f) => (
+                  <div key={`${f.kind}:${f.column}`} className="flex items-center gap-2 text-[12px]">
+                    <span
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ background: f.weight >= 5 || f.kind === "constant" ? "#f87171" : "#fbbf24" }}
+                    />
+                    <span className="text-slate-200 font-medium truncate">{f.column}</span>
+                    <span className="text-slate-500 truncate">{f.detail}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Trend */}
           <Section title="Quality trend" hint={trends ? `${trends.data_points.length} run(s)` : ""}>
@@ -280,8 +354,16 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
 
           {/* Per-rule + dimensions */}
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
-            <Section title="Rule results">
-              <RuleResults metrics={metrics} rules={rules} isAdmin={isAdmin} />
+            <Section
+              title="Rule results"
+              action={isAdmin ? <RuleEditor tableFqn={selected} columns={profileColumnNames} onSaved={() => analyze(selected)} /> : undefined}
+            >
+              <RuleResults
+                metrics={metrics}
+                rules={rules}
+                isAdmin={isAdmin}
+                onDelete={isAdmin ? onDeleteRule : undefined}
+              />
             </Section>
             <Section title="Rules by dimension">
               {dimensionSegments.length === 0 ? (
@@ -303,10 +385,35 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
             </Section>
           </div>
 
+          {/* Suggested rules (admin, needs a live profile for total_rows) */}
+          {isAdmin && (
+            <Section title="Suggested rules" hint="from a live column profile">
+              <RuleSuggestions
+                tableFqn={selected}
+                columns={profile?.columns ?? []}
+                existingRules={rules}
+                onSaved={() => analyze(selected)}
+                onRunLiveProfile={runLiveProfile}
+                profiling={profileLoading}
+              />
+            </Section>
+          )}
+
           {/* Column profiling */}
           <Section
             title="Column profile"
-            hint={profile?.row_count_approx ? `~${Number(profile.row_count_approx).toLocaleString()} rows` : ""}
+            hint={profileRowCount != null ? `~${profileRowCount.toLocaleString()} rows` : ""}
+            action={
+              isAdmin ? (
+                <button
+                  onClick={runLiveProfile}
+                  disabled={profileLoading}
+                  className="px-3 py-1.5 text-[12px] rounded-lg border border-white/[0.1] text-slate-300 hover:border-accent/40 hover:text-white transition-colors disabled:opacity-40"
+                >
+                  {profileLoading ? "Profiling…" : "Profile now (live)"}
+                </button>
+              ) : undefined
+            }
           >
             <ColumnProfile profile={profile} />
           </Section>
@@ -328,12 +435,23 @@ export function DQMetricsPanel({ tableFqn = "" }: Props) {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+function Section({
+  title,
+  hint,
+  action,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <div className="p-5 bg-surface-50 rounded-xl border border-white/[0.06]">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center gap-3 mb-3">
         <h3 className="text-[13px] font-semibold text-slate-200">{title}</h3>
         {hint && <span className="text-[11px] text-slate-500">{hint}</span>}
+        {action && <div className="ml-auto">{action}</div>}
       </div>
       {children}
     </div>
@@ -364,10 +482,12 @@ function RuleResults({
   metrics,
   rules,
   isAdmin,
+  onDelete,
 }: {
   metrics: DQMetricsResult | null;
   rules: DQRule[];
   isAdmin: boolean;
+  onDelete?: (ruleId: string) => void;
 }) {
   if (metrics && metrics.metrics.length > 0) {
     const sorted = [...metrics.metrics].sort((a, b) => (a.pass_rate ?? 2) - (b.pass_rate ?? 2));
@@ -395,6 +515,15 @@ function RuleResults({
               )}
               {m.failing_rows ? <span className="text-slate-600"> · {m.failing_rows.toLocaleString()}✗</span> : null}
             </div>
+            {onDelete && m.rule_id && (
+              <button
+                onClick={() => onDelete(m.rule_id)}
+                title="Delete rule"
+                className="shrink-0 text-slate-600 hover:text-red-400 text-[13px] leading-none"
+              >
+                ×
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -412,6 +541,15 @@ function RuleResults({
             {r.column_name && <span className="text-slate-500">· {r.column_name}</span>}
             {r.expression && <span className="text-slate-600 truncate font-mono text-[11px]">{r.expression}</span>}
             {r.severity && <span className="ml-auto text-[10px] uppercase text-slate-500">{r.severity}</span>}
+            {onDelete && r.rule_id && (
+              <button
+                onClick={() => onDelete(r.rule_id as string)}
+                title="Delete rule"
+                className={`${r.severity ? "" : "ml-auto"} shrink-0 text-slate-600 hover:text-red-400 text-[13px] leading-none`}
+              >
+                ×
+              </button>
+            )}
           </div>
         ))}
       </div>

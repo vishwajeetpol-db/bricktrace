@@ -16,16 +16,17 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { AnimatePresence, motion } from "framer-motion";
-import { RotateCcw, Code2, Briefcase, Lightbulb } from "lucide-react";
+import { RotateCcw, Code2, Briefcase, Lightbulb, Tag } from "lucide-react";
 import { useLineageStore } from "../../store/lineageStore";
 import { isHiddenInBusinessView, businessNodeLabel, businessNodeType } from "../../lib/businessView";
 import { assignWorkspaceColors } from "../../lib/workspaceColors";
 import LineageExplainModal from "./LineageExplainModal";
 import { api } from "../../api/client";
+import type { GlossaryOverlay } from "../../api/client";
 import { layoutGraph } from "../../lib/elkLayout";
 
 import TableNodeComponent from "./TableNode";
-import type { SharingBadge } from "./TableNode";
+import type { SharingBadge, GlossaryBadge } from "./TableNode";
 import EntityNodeComponent from "./EntityNode";
 import SharingNodeComponent from "./SharingNode";
 import AnimatedEdge from "./AnimatedEdge";
@@ -70,6 +71,11 @@ function LineageCanvas() {
 
   // AI "explain this lineage" modal (Business-view lightbulb).
   const [explainOpen, setExplainOpen] = useState(false);
+
+  // Business-glossary overlay — paint linked term chips onto table nodes. Local
+  // state (off by default), fetched on demand; a lens, never part of the graph.
+  const [glossaryOverlayEnabled, setGlossaryOverlayEnabled] = useState(false);
+  const [glossaryOverlay, setGlossaryOverlay] = useState<GlossaryOverlay | null>(null);
 
   // Subgraph extraction: when focusTable is set, show only its lineage path.
   // lineageDepth controls how many table-to-table hops to show (0 = full).
@@ -525,6 +531,35 @@ function LineageCanvas() {
     return () => { cancelled = true; };
   }, [sharingEnabled, sharingAudience, focusTable, storeCatalog, storeSchema, scope, setSharingOverlay]);
 
+  // Fetch the business-glossary overlay when the Terms toggle is on, scoped the
+  // same way as the sharing overlay (catalog-wide when in catalog scope).
+  useEffect(() => {
+    if (!glossaryOverlayEnabled) { setGlossaryOverlay(null); return; }
+    const cat = focusTable ? focusTable.split(".")[0] : storeCatalog;
+    const sch = scope === "catalog" ? undefined : (focusTable ? focusTable.split(".")[1] : storeSchema);
+    if (!cat) { setGlossaryOverlay(null); return; }
+
+    let cancelled = false;
+    api.getGlossaryOverlay(cat, sch)
+      .then((o) => { if (!cancelled) setGlossaryOverlay(o); })
+      .catch(() => { if (!cancelled) setGlossaryOverlay(null); });
+    return () => { cancelled = true; };
+  }, [glossaryOverlayEnabled, focusTable, storeCatalog, storeSchema, scope]);
+
+  // Per-table glossary badge map — term chips + a representative domain color.
+  const glossaryByTable = useMemo(() => {
+    const m = new Map<string, GlossaryBadge>();
+    if (!glossaryOverlayEnabled || !glossaryOverlay) return m;
+    for (const entry of glossaryOverlay.overlay) {
+      if (!entry.terms.length) continue;
+      m.set(entry.table, {
+        terms: entry.terms.map((t) => ({ name: t.name, column: t.column, domain_color: t.domain_color })),
+        domainColor: entry.terms.find((t) => t.domain_color)?.domain_color ?? null,
+      });
+    }
+    return m;
+  }, [glossaryOverlayEnabled, glossaryOverlay]);
+
   // Build adjacency maps for O(1) column lineage traversal (computed once when edges change)
   const colAdjacency = useMemo(() => {
     // target "table.col" → list of edges feeding into it
@@ -611,7 +646,7 @@ function LineageCanvas() {
         isSelected: false,
         isHighlighted: true,
         isDimmed: false,
-        ...(n.node_type === "table" ? { sharingBadge: badgeByTable.get(n.id) } : {}),
+        ...(n.node_type === "table" ? { sharingBadge: badgeByTable.get(n.id), glossaryBadge: glossaryByTable.get(n.id) } : {}),
         ...(n.node_type === "entity" && n.workspace_id
           ? { workspaceColor: workspaceColors.get(String(n.workspace_id)) }
           : {}),
@@ -701,7 +736,7 @@ function LineageCanvas() {
     // expandedNodes is intentionally NOT in the dependency array.
     // Expand/collapse is handled by a separate effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [augNodes, augEdges, badgeByTable, workspaceColors, reactFlowInstance, layoutKey]);
+  }, [augNodes, augEdges, badgeByTable, glossaryByTable, workspaceColors, reactFlowInstance, layoutKey]);
 
   // =========================================================================
   // EXPAND/COLLAPSE EFFECT — updates node data in place without re-running ELK.
@@ -1073,6 +1108,22 @@ function LineageCanvas() {
               Business
             </button>
           </div>
+
+          {/* Business-glossary term overlay toggle — paints linked term chips
+              onto table nodes. Works in both technical and business views. */}
+          <button
+            onClick={() => setGlossaryOverlayEnabled((v) => !v)}
+            aria-pressed={glossaryOverlayEnabled}
+            title="Business terms — overlay linked glossary terms onto tables"
+            className={`flex items-center gap-1.5 px-2.5 py-[7px] rounded-lg backdrop-blur-md border transition-colors shadow-[0_2px_12px_rgba(0,0,0,0.3)] ${
+              glossaryOverlayEnabled
+                ? "bg-accent/15 border-accent/40 text-accent-light"
+                : "bg-surface-100/90 border-white/[0.06] text-slate-500 hover:text-slate-300 hover:bg-white/[0.05]"
+            }`}
+          >
+            <Tag size={13} />
+            <span className="text-[11px] font-medium">Terms</span>
+          </button>
 
           {/* AI explain-the-lineage bulb — business view only */}
           {businessView && (

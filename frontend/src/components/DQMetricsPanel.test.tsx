@@ -48,8 +48,8 @@ const trends = {
 const profile = {
   table_full_name: "main.s.t",
   row_count_approx: "12345",
-  profile_source: "delta_stats",
-  columns: [{ name: "email", distinct_count: 100, null_pct: 0.5, min: null, max: null }],
+  profile_source: "live_query",
+  columns: [{ name: "email", total_rows: 1000, distinct_count: 100, null_count: 5, null_pct: 0.5, min: null, max: null }],
 };
 const propagation = {
   table_fqn: "main.s.t",
@@ -121,6 +121,24 @@ describe("DQMetricsPanel", () => {
     expect(screen.getByText(/improving/i)).toBeInTheDocument();
     // upstream coverage warning
     expect(screen.getByText(/upstream table\(s\) have no DQ rules/i)).toBeInTheDocument();
+    // findings callout surfaces the null column from the live profile
+    expect(await screen.findByText(/1 data finding/i)).toBeInTheDocument();
+    expect(screen.getByText(/0.50% null/)).toBeInTheDocument();
+  });
+
+  it("does not crash when the table has no rules (short metrics response)", async () => {
+    // Backend's no-rules branch omits sample_size / rules_evaluated / rules_total.
+    global.fetch = routeFetch([
+      ["/dq-rules/metrics", { table_fqn: "main.s.t", metrics: [], quality_score: null, note: "No DQ rules defined" }],
+      ["/dq-rules/trends", { table_fqn: "main.s.t", trend: "stable", data_points: [] }],
+      ["/dq-rules/propagation", { table_fqn: "main.s.t", upstream_quality: [], upstream_count: 0, covered_count: 0 }],
+      ["/diagnostics/profile", { table_full_name: "main.s.t", row_count_approx: null, profile_source: "none", columns: [] }],
+      ["/dq-rules/record-metrics", { status: "ok" }],
+      ["/dq-rules", { rules: [] }],
+    ]) as any;
+    render(<DQMetricsPanel tableFqn="main.s.t" />);
+    expect(await screen.findByText(/No rules yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/No DQ rules defined for this table yet/i)).toBeInTheDocument();
   });
 
   it("skips live scoring for non-admins but still shows rules & profile", async () => {

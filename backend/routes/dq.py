@@ -217,8 +217,11 @@ async def upsert_dq_rule(request: Request, rule: DQRuleIn):
     # a value ending in a backslash escaped the closing quote of its own literal.
     safe = sql_str
     import hashlib
+    # rule_type MUST be part of the identity: NOT_NULL and UNIQUE on the same column
+    # both carry an empty expression, so without it they hash to the same id and the
+    # second silently overwrites the first.
     rule_id = (rule.rule_id or hashlib.sha256(
-        f"{rule.table_fqn}{rule.column_name}{rule.expression}".encode()
+        f"{rule.table_fqn}{rule.column_name}{rule.rule_type}{rule.expression}".encode()
     ).hexdigest()[:12])
     if not _RULE_ID_RE.match(rule_id):
         raise HTTPException(

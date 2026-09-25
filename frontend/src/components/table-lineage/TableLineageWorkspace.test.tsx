@@ -10,6 +10,7 @@ vi.mock("framer-motion", () => ({
 }));
 
 // The heavy graph layer + its provider are not unit-testable.
+vi.mock("../layout/HeaderActions", () => ({ default: () => <div data-testid="header-actions" /> }));
 vi.mock("../graph/LineageCanvas", () => ({ default: () => <div data-testid="canvas" /> }));
 vi.mock("reactflow", () => ({ ReactFlowProvider: ({ children }: any) => <div>{children}</div> }));
 

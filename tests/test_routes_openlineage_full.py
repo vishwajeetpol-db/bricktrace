@@ -47,6 +47,12 @@ def test_table_to_openlineage_dataset():
     assert "dataSource" in ds["facets"]
 
 
+def test_app_host_fails_open():
+    import backend.routes.openlineage as ol
+    with patch("backend.routes.openlineage._get_client", side_effect=RuntimeError("no client")):
+        assert ol._app_host() is None
+
+
 def test_build_openlineage_run_event():
     import backend.routes.openlineage as ol
     ev = ol._build_openlineage_run_event([], {"name": "t"}, "JOB", "1", "2024-01-01T00:00:00Z")
@@ -77,9 +83,13 @@ class TestExport:
         assert resp.status_code == 200
         data = resp.json()
         assert data["count"] == 1
+        # Canonical OpenLineage names are fully-qualified (catalog.schema.table),
+        # not the bare table name — that's what lets consumers dedupe datasets.
         ev = data["events"][0]
-        assert ev["outputs"][0]["name"] == "tgt"
-        assert any(i["name"] == "src" for i in ev["inputs"])
+        assert ev["outputs"][0]["name"] == "cat.sch.tgt"
+        assert any(i["name"] == "cat.sch.src" for i in ev["inputs"])
+        # Export carries a conformance report and it should pass for a clean graph.
+        assert data["conformance"]["valid"] is True
 
     def test_export_with_columns(self, app_client):
         col = ColumnLineageResponse(edges=[ColumnLineageEdge(
@@ -93,8 +103,11 @@ class TestExport:
                 "catalog": "cat", "schema": "sch", "include_columns": True})
         assert resp.status_code == 200
         ev = resp.json()["events"][0]
-        # schema facet added because target column matched
-        assert "schema" in ev["outputs"][0]["facets"]
+        # ColumnLineageDatasetFacet maps the output column to its input field.
+        cl = ev["outputs"][0]["facets"]["columnLineage"]
+        assert "tc1" in cl["fields"]
+        assert cl["fields"]["tc1"]["inputFields"][0]["field"] == "c1"
+        assert cl["fields"]["tc1"]["inputFields"][0]["name"] == "cat.sch.src"
 
     def test_export_columns_error_swallowed(self, app_client):
         with patch("backend.routes.openlineage.get_table_lineage",
@@ -117,6 +130,70 @@ class TestExport:
                    side_effect=RuntimeError("boom")):
             resp = app_client.get("/api/export/openlineage", params={"catalog": "cat"})
         assert resp.status_code == 500
+
+    def test_export_ndjson_format(self, app_client):
+        with patch("backend.routes.openlineage.get_table_lineage",
+                   return_value=self._lineage_with_flow()):
+            resp = app_client.get("/api/export/openlineage", params={
+                "catalog": "cat", "format": "ndjson"})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/x-ndjson")
+        # One JSON object per line.
+        import json
+        lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+        assert len(lines) == 1
+        assert json.loads(lines[0])["outputs"][0]["name"] == "cat.sch.tgt"
+
+    def test_export_rejects_bad_event_type(self, app_client):
+        resp = app_client.get("/api/export/openlineage", params={
+            "catalog": "cat", "event_type": "DONE"})
+        assert resp.status_code == 400
+
+    def test_export_rejects_bad_format(self, app_client):
+        resp = app_client.get("/api/export/openlineage", params={
+            "catalog": "cat", "format": "yaml"})
+        assert resp.status_code == 400
+
+    def test_export_with_data_quality_facet(self, app_client):
+        dq_rows = [{"table_fqn": "cat.sch.tgt", "column_name": "amt",
+                    "rule_type": "NOT_NULL", "expression": None, "severity": "ERROR"}]
+        with patch("backend.routes.openlineage.get_table_lineage",
+                   return_value=self._lineage_with_flow()), \
+             patch("backend.routes.openlineage._execute_sql", return_value=dq_rows):
+            resp = app_client.get("/api/export/openlineage", params={
+                "catalog": "cat", "schema": "sch", "include_data_quality": True})
+        assert resp.status_code == 200
+        facets = resp.json()["events"][0]["outputs"][0]["facets"]
+        assert "dataQualityRules" in facets
+        assert facets["dataQualityRules"]["rules"][0]["ruleType"] == "NOT_NULL"
+
+    def test_export_dq_scope_escapes_like_wildcards(self, app_client):
+        # A schema name with '_' must be escaped in the LIKE prefix, or it would
+        # match another schema's dq_rules (my_schema also matches myXschema).
+        captured = {}
+        def fake_sql(sql):
+            if "dq_rules" in sql:
+                captured["sql"] = sql
+            return []
+        with patch("backend.routes.openlineage.get_table_lineage",
+                   return_value=self._lineage_with_flow()), \
+             patch("backend.routes.openlineage._execute_sql", side_effect=fake_sql):
+            resp = app_client.get("/api/export/openlineage", params={
+                "catalog": "cat", "schema": "my_schema", "include_data_quality": True})
+        assert resp.status_code == 200
+        # like_escape adds `\_`; sql_str then doubles the backslash for the literal
+        # layer, so the emitted SQL carries `my\\_schema` (Spark unwinds it to `\_`).
+        assert "cat.my\\\\_schema.%" in captured["sql"]
+
+    def test_export_dq_query_failure_is_swallowed(self, app_client):
+        # _dq_rules_for_scope fails open — export still succeeds without the facet.
+        with patch("backend.routes.openlineage.get_table_lineage",
+                   return_value=self._lineage_with_flow()), \
+             patch("backend.routes.openlineage._execute_sql", side_effect=RuntimeError("no dq table")):
+            resp = app_client.get("/api/export/openlineage", params={
+                "catalog": "cat", "schema": "sch", "include_data_quality": True})
+        assert resp.status_code == 200
+        assert "dataQualityRules" not in resp.json()["events"][0]["outputs"][0]["facets"]
 
 
 # ---------------------------------------------------------------------------

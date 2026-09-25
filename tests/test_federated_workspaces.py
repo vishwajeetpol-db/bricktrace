@@ -221,6 +221,16 @@ class TestRegistry:
         sql = ex.call_args.args[0]
         assert "INSERT INTO" in sql and "222" in sql and "Silver WS" in sql
 
+    def test_register_evicts_stale_cached_client(self):
+        # A re-registration (new host/creds or a disable) must drop any cached
+        # peer client, or get_workspace_client would keep returning the stale one.
+        fw._peer_clients["222"] = MagicMock()
+        with patch.object(fw, "assert_databricks_workspace_url", side_effect=lambda u, *a: u), \
+             patch.object(fw, "_ensure_table"), \
+             patch.object(fw, "_execute_sql", return_value=[]):
+            fw.register_peer_workspace("222", "https://new-host.azuredatabricks.net", "me@x.com")
+        assert "222" not in fw._peer_clients
+
 
 class TestReadSecret:
     def test_decodes_base64_value(self):

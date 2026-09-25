@@ -284,6 +284,7 @@
     <li><a href="#transform">Transformation lineage — the differentiator</a></li>
     <li><a href="#panels">Capability panels &amp; the per-table cache</a></li>
     <li><a href="#business">Business view &amp; AI graph explanation</a></li>
+    <li><a href="#streaming">Streaming topology &amp; live metrics</a></li>
     <li><a href="#perf">Performance &amp; scale</a></li>
     <li><a href="#security">Security model</a></li>
     <li><a href="#features">Feature inventory</a></li>
@@ -362,7 +363,7 @@
   <div class="col">
     <p class="lead">Pick any table and BrickTrace renders its <em>complete</em> lineage cone — every upstream source back to every downstream target — across all catalogs and schemas, with the mediating jobs and pipelines in between.</p>
     <p>The trace is a <strong>directional breadth-first walk</strong> over <code>system.access.table_lineage</code> from the seed table. The direction is the subtle part: ancestors are found by following <code>target → source</code> only, and descendants by following <code>source → target</code> only. A bidirectional walk would fan out through shared source tables (a raw <code>samples.tpch.orders</code> read by dozens of unrelated pipelines) and pull in every sibling consumer. Keeping each direction pure confines the trace to the seed's own cone.</p>
-    <p>The walk is metastore-wide — it crosses catalog and schema boundaries freely — and stops at a node cap with a truncation guard so a pathological graph can't run away. Complete traces are cached (see <a href="#perf">§7</a>).</p>
+    <p>The walk is metastore-wide — it crosses catalog and schema boundaries freely — and stops at a node cap with a truncation guard so a pathological graph can't run away. Complete traces are cached (see <a href="#perf">§8</a>).</p>
   </div>
 
   <figure>
@@ -553,8 +554,69 @@
 </section>
 
 <!-- 7 -->
+<section id="streaming">
+  <div class="sec-head"><span class="sec-num">Section 07</span><h2 class="sec">Streaming topology &amp; live metrics</h2></div>
+  <div class="col">
+    <p class="lead">Streaming tables get their own lens: a source-to-sink topology graph plus a live operational dashboard — freshness, pipeline health, and throughput — built the same metadata-only way as the rest of the app.</p>
+    <p><strong>Discovery + enrichment.</strong> <code>GET /api/lineage/streaming-topology</code> finds every <code>STREAMING_TABLE</code> in <code>system.information_schema.tables</code>, then enriches each with an <strong>ingestion-source classification</strong> (Kafka, Kinesis, Event Hubs, Auto Loader, Delta — inferred from the data-source format and the upstream sources it reads), its <strong>producing pipeline</strong> (id joined to a name from <code>system.lakeflow.pipelines</code>), and a <strong>freshness SLA bucket</strong> (fresh / lagging / stale, computed from <code>last_altered</code>).</p>
+    <p><strong>Live metrics.</strong> <code>GET /api/lineage/streaming-metrics</code> takes the discovered pipeline ids and returns, per pipeline: update <strong>status and success rate</strong> from <code>system.lakeflow.pipeline_update_timeline</code>, plus <strong>throughput, backlog, and data-quality</strong> parsed from DLT <code>flow_progress</code> events read over the pipeline events REST API. Event reads are short-TTL cached, and every enrichment is <strong>fail-open</strong> — a missing privilege or a stream with no retained events degrades to "unavailable", never an error.</p>
+  </div>
+
+  <figure>
+    <div class="fig-scroll">
+      <svg viewBox="0 0 840 300" role="img" aria-label="Streaming tables discovered from information_schema are enriched with source kind, producing pipeline, and freshness by the topology endpoint, which feeds a React Flow source-to-stream DAG; a metrics endpoint reads the pipeline update timeline and flow_progress events to feed a live metrics dashboard.">
+        <defs>
+          <marker id="ar7" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><polygon points="0 0, 9 4.5, 0 9" fill="currentColor"/></marker>
+          <marker id="ar7i" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><polygon points="0 0, 9 4.5, 0 9" fill="var(--info)"/></marker>
+        </defs>
+        <!-- source -->
+        <rect x="24" y="118" width="150" height="64" rx="10" fill="var(--surface-2)" stroke="var(--line-strong)"/>
+        <text x="99" y="146" text-anchor="middle" font-size="13" font-weight="640">Streaming tables</text>
+        <text x="99" y="165" text-anchor="middle" class="mono" font-size="9.5" fill="var(--ink-soft)">information_schema.tables</text>
+        <!-- topology endpoint -->
+        <rect x="250" y="34" width="250" height="88" rx="11" fill="var(--surface)" stroke="var(--accent)" stroke-width="2"/>
+        <text x="375" y="24" text-anchor="middle" class="lbl" font-size="10" fill="var(--accent)">GET /streaming-topology</text>
+        <text x="375" y="60" text-anchor="middle" font-size="12.5" font-weight="640">discover + enrich</text>
+        <text x="375" y="80" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">source kind · producer pipeline</text>
+        <text x="375" y="97" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">freshness SLA (last_altered)</text>
+        <text x="375" y="113" text-anchor="middle" class="mono" font-size="9" fill="var(--ink-faint)">+ system.lakeflow.pipelines</text>
+        <!-- metrics endpoint -->
+        <rect x="250" y="170" width="250" height="106" rx="11" fill="var(--surface)" stroke="var(--info)" stroke-width="1.7"/>
+        <text x="375" y="160" text-anchor="middle" class="lbl" font-size="10" fill="var(--info)">GET /streaming-metrics</text>
+        <text x="375" y="196" text-anchor="middle" font-size="12.5" font-weight="640">per-pipeline live metrics</text>
+        <text x="375" y="216" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">status · success rate</text>
+        <text x="375" y="231" text-anchor="middle" class="mono" font-size="9" fill="var(--ink-faint)">pipeline_update_timeline</text>
+        <text x="375" y="250" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">throughput · backlog · DQ</text>
+        <text x="375" y="265" text-anchor="middle" class="mono" font-size="9" fill="var(--ink-faint)">flow_progress events (REST)</text>
+        <!-- UI -->
+        <rect x="612" y="46" width="204" height="64" rx="10" fill="var(--surface-2)" stroke="var(--line-strong)"/>
+        <text x="714" y="74" text-anchor="middle" font-size="13" font-weight="640">Topology DAG</text>
+        <text x="714" y="93" text-anchor="middle" class="mono" font-size="9.5" fill="var(--ink-soft)">React Flow · source→stream</text>
+        <rect x="612" y="188" width="204" height="72" rx="10" fill="var(--surface-2)" stroke="var(--line-strong)"/>
+        <text x="714" y="216" text-anchor="middle" font-size="13" font-weight="640">Metrics dashboard</text>
+        <text x="714" y="235" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">health badges · sparklines</text>
+        <text x="714" y="251" text-anchor="middle" class="mono" font-size="9.5" fill="var(--ink-soft)">freshness filter · auto-refresh</text>
+        <!-- arrows -->
+        <line x1="174" y1="140" x2="246" y2="92" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar7)"/>
+        <line x1="174" y1="162" x2="246" y2="210" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar7)"/>
+        <line x1="500" y1="78" x2="608" y2="78" stroke="var(--accent)" stroke-width="1.6" marker-end="url(#ar7)"/>
+        <line x1="500" y1="223" x2="608" y2="223" stroke="var(--info)" stroke-width="1.6" marker-end="url(#ar7i)"/>
+        <line x1="500" y1="100" x2="560" y2="196" stroke="var(--line-strong)" stroke-width="1.2" stroke-dasharray="4 4"/>
+        <text x="556" y="150" text-anchor="middle" class="lbl" font-size="9">pipeline ids</text>
+      </svg>
+    </div>
+    <figcaption><b>Figure 5.</b> Two endpoints, one screen. Topology discovers and enriches the streaming tables; metrics turns the discovered pipeline ids into live status and throughput from the update timeline and <code>flow_progress</code> events. Both fail open.</figcaption>
+  </figure>
+
+  <div class="note info">
+    <span class="k">Fail-open by design</span>
+    Throughput and backlog depend on a pipeline having retained <code>flow_progress</code> events and the service principal having read access. Where either is missing, the row still renders — status and freshness from the always-readable metadata, with live metrics shown as <em>unavailable</em> rather than blocking the screen.
+  </div>
+</section>
+
+<!-- 8 -->
 <section id="perf">
-  <div class="sec-head"><span class="sec-num">Section 07</span><h2 class="sec">Performance &amp; scale</h2></div>
+  <div class="sec-head"><span class="sec-num">Section 08</span><h2 class="sec">Performance &amp; scale</h2></div>
   <div class="col">
     <p class="lead">Because BrickTrace only reads metadata, the warehouse is barely touched — and layered caching plus request coalescing keep it that way even at organization scale.</p>
     <ul>
@@ -567,9 +629,9 @@
   </div>
 </section>
 
-<!-- 8 -->
+<!-- 9 -->
 <section id="security">
-  <div class="sec-head"><span class="sec-num">Section 08</span><h2 class="sec">Security model</h2></div>
+  <div class="sec-head"><span class="sec-num">Section 09</span><h2 class="sec">Security model</h2></div>
   <div class="col">
     <p class="lead">The security story is short by design: read metadata, write one schema, gate the dangerous switches.</p>
     <ul>
@@ -582,9 +644,9 @@
   </div>
 </section>
 
-<!-- 9 -->
+<!-- 10 -->
 <section id="features">
-  <div class="sec-head"><span class="sec-num">Section 09</span><h2 class="sec">Feature inventory</h2></div>
+  <div class="sec-head"><span class="sec-num">Section 10</span><h2 class="sec">Feature inventory</h2></div>
   <div class="col">
     <p class="lead">The capability families and the primary API route behind each.</p>
   </div>
@@ -599,6 +661,7 @@
         <tr><td><b>Governance &amp; classification</b></td><td>Ownership, column sensitivity, propagation, custom rules</td><td><code>GET /api/governance</code></td></tr>
         <tr><td><b>Access &amp; security</b></td><td>Declared grants joined with audited usage; dormant-grant finder</td><td><code>GET /api/access</code></td></tr>
         <tr><td><b>Observability / run health</b></td><td>Per-node verdict, success rate, duration trend, per-run cost</td><td><code>GET /api/observability/runs</code></td></tr>
+        <tr><td><b>Streaming topology &amp; metrics</b></td><td>Source-to-sink DAG with source-kind + freshness; live pipeline status, throughput, and backlog</td><td><code>/api/lineage/streaming-topology</code>, <code>/streaming-metrics</code></td></tr>
         <tr><td><b>AI/ML lineage</b></td><td>Serving inventory and model → training-data lineage</td><td><code>/api/ml/*</code></td></tr>
         <tr><td><b>Discovery &amp; search</b></td><td>Asset search, PII/sensitive-column and orphan finders</td><td><code>/api/search</code>, <code>/api/discover/*</code></td></tr>
         <tr><td><b>Data quality rules</b></td><td>Per-column expectations in an app-owned store</td><td><code>/api/dq-rules</code></td></tr>

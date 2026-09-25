@@ -169,6 +169,12 @@ def register_peer_workspace(workspace_id: str, deployment_host: str, actor: str,
         f"'{sql_str(actor)}', current_timestamp())"
     )
     _invalidate_peers_cache()
+    # Drop any cached client for this peer: a re-registration may have changed the
+    # host, credentials, or enabled state, and get_workspace_client returns a cached
+    # client BEFORE re-reading the registry — so without this eviction a new host/
+    # credential silently wouldn't take effect and a disabled peer would keep
+    # resolving until an auth error happened to evict it.
+    evict_peer_client(str(workspace_id))
     return {"workspace_id": str(workspace_id), "deployment_host": host,
             "auth_kind": auth_kind, "enabled": enabled}
 

@@ -8,6 +8,7 @@ const ACCENT_STYLES: Record<string, { ring: string; dot: string; text: string; s
   amber: { ring: "border-amber-500/15 hover:border-amber-500/35", dot: "bg-amber-400", text: "text-amber-400", switchOn: "data-[state=checked]:bg-amber-500" },
   violet: { ring: "border-violet-500/15 hover:border-violet-500/35", dot: "bg-violet-400", text: "text-violet-400", switchOn: "data-[state=checked]:bg-violet-500" },
   cyan: { ring: "border-cyan-500/15 hover:border-cyan-500/35", dot: "bg-cyan-400", text: "text-cyan-400", switchOn: "data-[state=checked]:bg-cyan-500" },
+  rose: { ring: "border-rose-500/15 hover:border-rose-500/35", dot: "bg-rose-400", text: "text-rose-400", switchOn: "data-[state=checked]:bg-rose-500" },
   indigo: { ring: "border-indigo-500/15 hover:border-indigo-500/35", dot: "bg-indigo-400", text: "text-indigo-400", switchOn: "data-[state=checked]:bg-indigo-500" },
 };
 

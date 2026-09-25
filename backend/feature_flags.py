@@ -167,6 +167,30 @@ FLAG_DEFINITIONS: list[dict] = [
         ],
         "depends_on": ["federated_sync.cross_workspace"],
     },
+    {
+        "id": "metadata_only.hide_data_quality",
+        "module": "metadata_only",
+        "module_label": "Metadata-Only Mode",
+        "accent": "rose",
+        "name": "Hide Data Quality",
+        "description": (
+            "Removes the Data Quality feature everywhere — the Data Quality tab in the left "
+            "navigation AND its card inside the Reports hub. DQ live scoring and column "
+            "profiling run queries against the actual table data (row-level), which goes "
+            "beyond BrickTrace's metadata-only default — turn this ON to hide it for a "
+            "metadata-only deployment. OFF (default) keeps it visible. The Reports hub itself "
+            "(Overview, Root Cause) stays; authored DQ rules are not deleted."
+        ),
+        "cost": "low",
+        "risk": "low",
+        "side_effects": [
+            "Hides the Data Quality entry in the left navigation and the Data Quality card in Reports for every user.",
+            "Deep links to the Data Quality view fall back to Home while this is on.",
+            "Does not delete authored DQ rules — they reappear if you turn this off.",
+        ],
+        "access_requirements": [],
+        "depends_on": [],
+    },
 ]
 
 _flags_by_id = {f["id"]: f for f in FLAG_DEFINITIONS}

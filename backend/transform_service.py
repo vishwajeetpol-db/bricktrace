@@ -20,6 +20,7 @@ Performance optimizations (v3):
 """
 
 import os
+import re
 import sys
 import time
 import json
@@ -634,6 +635,109 @@ def load_edges(
     return _transform_cached_fetch(cache_key, _fetch)
 
 
+def _categorize_expression(expr: str) -> str:
+    """Best-effort category for an LLM/plan expression (drives the edge color).
+
+    Maps to the existing TRANSFORM_CATEGORIES keys — checked most-specific first
+    so e.g. a CASE containing arithmetic reads as CONDITIONAL, not ARITHMETIC.
+    """
+    e = (expr or "").upper()
+    if not e:
+        return "UNKNOWN"
+    if "CASE" in e or " WHEN " in e:
+        return "CONDITIONAL"
+    if any(fn in e for fn in ("SUM(", "AVG(", "COUNT(", "MIN(", "MAX(")):
+        return "AGGREGATE"
+    if "OVER (" in e or "OVER(" in e:
+        return "WINDOW"
+    if "CAST" in e or "TO_DATE" in e or "TO_TIMESTAMP" in e or "::" in e:
+        return "CAST"
+    # An arithmetic operator genuinely between two operands (word/paren on each
+    # side, spaces optional). This keeps compact `amount*quantity` while NOT
+    # matching `count(*)` (operator flanked by parens) or a separator inside a
+    # string literal like SPLIT(path, '/') (flanked by quotes).
+    if re.search(r"[\w)]\s*[*/+\-]\s*[\w(]", e):
+        return "ARITHMETIC"
+    if "(" in e:  # a function projection (YEAR/MONTH/CONCAT/UPPER/...)
+        return "PROJECTION"
+    return "PASSTHROUGH"
+
+
+def _llm_fallback_trace(
+    catalog: str, schema: str, table: str, column: str, start_ts: float
+) -> Optional[TransformResponse]:
+    """Synthesize a one-hop trace from the column-transformation resolver when the
+    captured-edge store has none.
+
+    The edge store (`lineage_edge_endpoints`) is only populated by a build, so a
+    table whose lineage was deduced by the LLM (or a captured plan/CDC spec) shows
+    "no transformation logic" in the backtrack panel even though the derivation is
+    already known. This bridges the two: it reuses `resolve_column_transformations`
+    (captured plan → CDC → stored LLM precedence) READ-ONLY — no producer entity is
+    passed, so it never triggers a fresh LLM run or any write; it only surfaces
+    analysis that already exists. Returns None when nothing usable is found (the
+    caller then keeps its original "no lineage" response).
+    """
+    try:
+        from backend.server.producer_source import resolve_column_transformations
+        res = resolve_column_transformations(catalog, schema, table)
+    except Exception as e:  # fail-open: the panel must still render "no lineage"
+        logger.debug(f"transform fallback: resolver unavailable for {catalog}.{schema}.{table}: {e}")
+        return None
+
+    cols = (res or {}).get("columns") or []
+    fqn = f"{catalog}.{schema}.{table}"
+    target = next(
+        (c for c in cols if (c.get("target_column") or c.get("column") or "").lower() == column.lower()),
+        None,
+    )
+    if not target:
+        return None
+
+    srcs = [s for s in (target.get("source_columns") or []) if s]
+    expr = (target.get("expression") or "").strip()
+    target_id = f"col:{fqn}::{column}"
+    # Passthrough / identity (source is just the column itself, or none): the
+    # column carries no transformation — report it as a source column.
+    non_self = [s for s in srcs if s.lower() != column.lower()]
+    if not non_self:
+        return TransformResponse(
+            levels=[], has_lineage=False, is_source_column=True,
+            fetch_duration_ms=int((time.time() - start_ts) * 1000),
+        )
+
+    category = _categorize_expression(expr)
+    color = TRANSFORM_CATEGORIES.get(category, "#6B7280")
+    provenance = res.get("source_label") or "Derived (analysis)"
+    src_nodes: list[TransformNode] = []
+    transforms: list[TransformEdge] = []
+    for s in non_self:
+        sid = f"col:{fqn}::{s}"
+        src_nodes.append(TransformNode(node_id=sid, table_fqn=fqn, column=s))
+        transforms.append(TransformEdge(
+            source_node_id=sid, target_node_id=target_id,
+            expression=expr or "--", category=category, category_color=color,
+            source_file=provenance,
+        ))
+    levels = [
+        TransformLevel(
+            depth=0, label="Target Column", color=LEVEL_COLORS[0],
+            nodes=[TransformNode(node_id=target_id, table_fqn=fqn, column=column,
+                                 captured_expression=expr or None)],
+            transforms=[],
+        ),
+        TransformLevel(
+            depth=1, label="Upstream Layer 1", color=LEVEL_COLORS[1],
+            nodes=src_nodes, transforms=transforms,
+        ),
+    ]
+    return TransformResponse(
+        levels=levels, has_lineage=True, is_source_column=False,
+        fetch_duration_ms=int((time.time() - start_ts) * 1000),
+        total_nodes=1 + len(src_nodes), total_edges=len(transforms), max_depth_reached=1,
+    )
+
+
 def backtrack_transform_lineage(
     catalog: str,
     schema: str,
@@ -667,6 +771,11 @@ def backtrack_transform_lineage(
         # Load all edges for this table (cached after first call)
         edges = load_edges(fqn, edge_table)
         if not edges:
+            # No captured build for this table — surface any resolver-known
+            # (captured-plan / CDC / stored-LLM) derivation instead of a dead end.
+            fb = _llm_fallback_trace(catalog, schema, table, column, start_ts)
+            if fb:
+                return fb
             return TransformResponse(
                 levels=[],
                 has_lineage=False,
@@ -687,6 +796,11 @@ def backtrack_transform_lineage(
 
         # Check if target column exists in the edge data
         if target_node_id not in upstream_idx:
+            # The table has edges, but not for THIS column — try the resolver
+            # (a derived column the build didn't capture may still be known).
+            fb = _llm_fallback_trace(catalog, schema, table, column, start_ts)
+            if fb:
+                return fb
             is_source = target_node_id in all_sources
             return TransformResponse(
                 levels=[],

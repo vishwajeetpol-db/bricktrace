@@ -8,31 +8,18 @@ vi.mock("framer-motion", () => ({
   motion: new Proxy({}, { get: () => (p: any) => <div onClick={p.onClick}>{p.children}</div> }),
   AnimatePresence: ({ children }: any) => children,
 }));
-const goLanding = vi.fn();
-vi.mock("../../hooks/useRouter", () => ({
-  goLanding: () => goLanding(),
-  goCatalogs: vi.fn(),
-  goControlPanel: vi.fn(),
-  goDQ: vi.fn(),
-  goGlossary: vi.fn(),
-  goNotifications: vi.fn(),
-  goExport: vi.fn(),
-  goRootCause: vi.fn(),
-  goBiConsumers: vi.fn(),
-  goStreaming: vi.fn(),
-}));
+// Branding + nav live in the left rail now — stub it out; it has its own test.
+vi.mock("../layout/SideNav", () => ({ default: () => <div data-testid="sidenav" /> }));
 
 describe("PageShell", () => {
   beforeEach(() => {
     useLineageStore.setState({ isAdmin: false, globalSearchOpen: false });
   });
 
-  it("renders children and brand", () => {
+  it("renders children and the left rail", () => {
     render(<PageShell><div>content here</div></PageShell>);
     expect(screen.getByText("content here")).toBeInTheDocument();
-    // Two-color wordmark: "Brick" + "Trace" in separate spans.
-    expect(screen.getByText("Brick")).toBeInTheDocument();
-    expect(screen.getByText("Trace")).toBeInTheDocument();
+    expect(screen.getByTestId("sidenav")).toBeInTheDocument();
   });
 
   it("opens global search on button click", async () => {
@@ -42,14 +29,9 @@ describe("PageShell", () => {
     expect(useLineageStore.getState().globalSearchOpen).toBe(true);
   });
 
-  it("renders a custom subtitle", () => {
+  it("renders the subtitle as the page title", () => {
     render(<PageShell subtitle="Data quality metrics"><div>x</div></PageShell>);
     expect(screen.getByText("Data quality metrics")).toBeInTheDocument();
-  });
-
-  it("renders the brand logo image", () => {
-    const { container } = render(<PageShell><div>x</div></PageShell>);
-    expect(container.querySelector('img[src="/bricktrace-logo.png"]')).toBeTruthy();
   });
 
   it("renders children in bare mode", () => {

@@ -119,12 +119,13 @@ export interface DQMetricsResult {
   table_fqn: string;
   metrics: DQMetric[];
   quality_score: number | null;
-  quality_grade: string | null;
-  rules_evaluated: number;
-  rules_total: number;
+  quality_grade?: string | null;
+  // Omitted by the backend's "no rules defined" short response — treat as optional.
+  rules_evaluated?: number;
+  rules_total?: number;
   rules_unevaluated?: number;
   coverage_complete?: boolean;
-  sample_size: number;
+  sample_size?: number;
   note?: string;
 }
 export interface DQRule {
@@ -154,6 +155,7 @@ export interface DQProfileColumn {
   distinct_count?: number | null;
   null_count?: number | null;
   null_pct?: number | null;
+  total_rows?: number | null;
   min?: string | number | null;
   max?: string | number | null;
   avg_col_len?: number | null;
@@ -216,6 +218,29 @@ export interface SharingOverlay {
   shared_out: SharedOutEntry[];
   foreign_catalogs: ForeignCatalogEntry[];
   available: boolean;
+}
+
+// Business-glossary overlay for a lineage scope — term links + domain colors
+// per table, so the graph can paint term chips onto table nodes.
+export interface GlossaryOverlayTerm {
+  term_id: string;
+  name: string;
+  domain: string | null;
+  domain_color: string | null;
+  column: string | null;
+  status: string | null;
+}
+export interface GlossaryOverlayEntry {
+  table: string;
+  terms: GlossaryOverlayTerm[];
+  domains: string[];
+}
+export interface GlossaryOverlay {
+  catalog: string;
+  schema: string | null;
+  overlay: GlossaryOverlayEntry[];
+  table_count: number;
+  kpis: { kpi_id: string; name: string; formula_sql: string; source_tables: string; domain: string; granularity: string }[];
 }
 
 export interface SharingOverview {
@@ -631,6 +656,62 @@ export interface AnalysisCompare {
   }[];
 }
 
+// --- Streaming topology + metrics ---
+export type StreamSourceKind = "kafka" | "kinesis" | "eventhub" | "autoloader" | "delta" | "stream";
+export type StreamFreshness = "fresh" | "lagging" | "stale" | "unknown";
+
+export interface StreamNode {
+  table_catalog: string;
+  table_schema: string;
+  table_name: string;
+  fqn?: string;
+  data_source_format?: string;
+  last_altered?: string;
+  source_kind?: StreamSourceKind;
+  pipeline_id?: string | null;
+  pipeline_name?: string | null;
+  age_seconds?: number | null;
+  freshness?: StreamFreshness;
+}
+
+export interface StreamEdge {
+  source: string;
+  target: string;
+  entity_type?: string;
+  relationship?: string;
+}
+
+export interface StreamingTopologyResponse {
+  streaming_tables: StreamNode[];
+  streaming_edges: StreamEdge[];
+  count: number;
+  available?: boolean;
+  error?: string;
+  edge_errors?: number;
+}
+
+export interface StreamPipelineMetrics {
+  status?: "active" | "idle" | "stale" | "failed" | "unknown";
+  last_update_at?: string | null;
+  last_update_age_seconds?: number | null;
+  last_result_state?: string | null;
+  total_updates?: number;
+  success_rate?: number | null;
+  failed_updates?: number;
+  avg_duration_seconds?: number | null;
+  metrics_available?: boolean;
+  throughput_rows?: number | null;
+  backlog_records?: number | null;
+  backlog_bytes?: number | null;
+  trend?: number[];
+  data_quality?: { dropped_records?: number | null; expectations?: unknown } | null;
+}
+
+export interface StreamingMetricsResponse {
+  metrics: Record<string, StreamPipelineMetrics>;
+  count: number;
+}
+
 export const api = {
   getUserInfo: () => fetchJson<UserInfo>(`${BASE}/user-info`),
 
@@ -899,6 +980,13 @@ export const api = {
 
   getSharingOverview: () => fetchJson<SharingOverview>(`${BASE}/sharing/overview`),
 
+  // Business-glossary overlay for a lineage scope (omit schema for catalog-wide).
+  getGlossaryOverlay: (catalog: string, schema?: string) =>
+    fetchJson<GlossaryOverlay>(
+      `${BASE}/glossary/lineage-overlay?catalog=${encodeURIComponent(catalog)}` +
+      (schema ? `&schema=${encodeURIComponent(schema)}` : "")
+    ),
+
   getEntityName: (entityType: string, entityId: string) =>
     fetchJson<{ name: string; owner?: string }>(
       `${BASE}/entity-name?entity_type=${encodeURIComponent(entityType)}&entity_id=${encodeURIComponent(entityId)}`
@@ -965,11 +1053,31 @@ export const api = {
   /** Recorded quality-score history for a table (for the trend chart). */
   getDQTrends: (tableFqn: string, days = 30) =>
     fetchJson<DQTrends>(`${BASE}/dq-rules/trends?table_fqn=${encodeURIComponent(tableFqn)}&days=${days}`),
-  /** Column profiling overlay (null %, distinct count, stats). Non-live = no admin needed. */
-  getColumnProfile: (catalog: string, schema: string, table: string) =>
+  /** Column profiling overlay (null %, distinct count, stats). live=true runs an ad-hoc
+   *  query (admin-only) and works even without ANALYZE stats. */
+  getColumnProfile: (catalog: string, schema: string, table: string, live = false) =>
     fetchJson<DQProfile>(
-      `${BASE}/diagnostics/profile?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`,
+      `${BASE}/diagnostics/profile?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}${live ? "&live=true" : ""}`,
     ),
+  /** Create or update a DQ rule. Admin-only. */
+  upsertDQRule: async (rule: {
+    table_fqn: string; column_name?: string; rule_type: string;
+    expression: string; severity?: string; notes?: string; rule_id?: string;
+  }) => {
+    const res = await fetch(`${BASE}/dq-rules`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(rule),
+    });
+    if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+    return res.json() as Promise<{ rule_id: string; status: string }>;
+  },
+  /** Delete a DQ rule by id. Admin-only. */
+  deleteDQRule: async (ruleId: string) => {
+    const res = await fetch(`${BASE}/dq-rules/${encodeURIComponent(ruleId)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+    return res.json() as Promise<{ rule_id: string; status: string }>;
+  },
   /** Upstream DQ coverage across lineage. */
   getDQPropagation: (catalog: string, schema: string, table: string) =>
     fetchJson<DQPropagation>(
@@ -988,4 +1096,15 @@ export const api = {
     if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
     return res.json() as Promise<{ status: string; run_id: string }>;
   },
+
+  // --- Streaming topology + live metrics ---
+  getStreamingTopology: (catalog?: string) =>
+    fetchJson<StreamingTopologyResponse>(
+      `${BASE}/lineage/streaming-topology${catalog ? `?catalog=${encodeURIComponent(catalog)}` : ""}`,
+    ),
+
+  getStreamingMetrics: (pipelineIds: string[]) =>
+    fetchJson<StreamingMetricsResponse>(
+      `${BASE}/lineage/streaming-metrics?pipeline_ids=${encodeURIComponent(pipelineIds.join(","))}`,
+    ),
 };

@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
+from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from databricks.sdk.service.sql import StatementState
@@ -83,6 +84,75 @@ def _safe_identifier(value: Optional[str]) -> Optional[str]:
     if not _IDENTIFIER_RE.match(v):
         raise HTTPException(status_code=400, detail=f"Invalid identifier: '{v[:50]}'")
     return v
+
+
+# ---------------------------------------------------------------------------
+# Streaming topology enrichment helpers
+# ---------------------------------------------------------------------------
+# Freshness SLA buckets (seconds since a stream's table was last written). These
+# are generic defaults — a triggered daily stream and a continuous one have very
+# different "fresh" windows, so the thresholds are env-tunable.
+STREAM_FRESH_SECONDS = int(os.environ.get("STREAM_FRESH_SECONDS", str(60 * 60)))          # < 1h  → fresh
+STREAM_LAGGING_SECONDS = int(os.environ.get("STREAM_LAGGING_SECONDS", str(24 * 60 * 60)))  # < 24h → lagging, else stale
+# Producer-discovery + metrics window. The producer→stream relationship is
+# stable, so this is generous (a stream that last ran weeks ago should still show
+# its producing pipeline). Freshness/staleness is computed from last_altered, not
+# this window, so a long lookback never overstates how fresh a stream is.
+STREAM_METRICS_LOOKBACK_DAYS = int(os.environ.get("STREAM_METRICS_LOOKBACK_DAYS", "90"))
+# Cap on streaming tables rendered — and the size of the batched producer-discovery
+# IN-list. Every rendered node is enriched, so this bounds both the node count and
+# the one lineage query, keeping the two consistent (no un-enriched orphan nodes).
+STREAM_TOPOLOGY_MAX = int(os.environ.get("STREAM_TOPOLOGY_MAX", "300"))
+
+
+def _classify_stream_source(data_source_format: Optional[str], source_fqns: list[str]) -> str:
+    """Best-effort ingestion-source classification for a streaming table.
+
+    Streaming tables often report UNKNOWN_DATA_SOURCE_FORMAT, so we also sniff the
+    upstream source names (paths/connectors) recorded in table_lineage. Returns a
+    coarse kind the UI renders with an icon; falls back to a generic "stream".
+    """
+    fmt = (data_source_format or "").lower()
+    joined = " ".join(s.lower() for s in source_fqns if s)
+    hay = f"{fmt} {joined}"
+    if "kafka" in hay:
+        return "kafka"
+    if "kinesis" in hay:
+        return "kinesis"
+    if "eventhub" in hay or "event_hub" in hay or "azure_event" in hay:
+        return "eventhub"
+    if ("cloudfiles" in hay or "autoloader" in hay
+            or any(s.lower().startswith(("s3:", "s3a:", "abfss:", "gs:", "dbfs:", "/volumes", "/volume"))
+                   for s in source_fqns if s)
+            or fmt in ("csv", "json", "parquet", "avro", "text")):
+        return "autoloader"
+    if "delta" in fmt:
+        return "delta"
+    return "stream"
+
+
+def _freshness(last_altered: Optional[str]) -> tuple[Optional[int], str]:
+    """(age_seconds, bucket) for a streaming table's last_altered timestamp.
+
+    Bucket is one of fresh | lagging | stale | unknown. Fail-open: an unparseable
+    or missing timestamp yields (None, "unknown") rather than raising.
+    """
+    if not last_altered:
+        return None, "unknown"
+    try:
+        ts = datetime.fromisoformat(str(last_altered).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = int((datetime.now(timezone.utc) - ts).total_seconds())
+        if age < 0:
+            age = 0
+        if age < STREAM_FRESH_SECONDS:
+            return age, "fresh"
+        if age < STREAM_LAGGING_SECONDS:
+            return age, "lagging"
+        return age, "stale"
+    except Exception:
+        return None, "unknown"
 
 
 # ===========================================================================
@@ -144,31 +214,258 @@ async def streaming_topology(request: Request, catalog: Optional[str] = Query(No
             SELECT t.table_catalog, t.table_schema, t.table_name, t.data_source_format, t.last_altered
             FROM system.information_schema.tables t
             WHERE t.table_type = 'STREAMING_TABLE' {cat_filter}
-            ORDER BY t.table_catalog, t.table_schema, t.table_name LIMIT 500
+            ORDER BY t.table_catalog, t.table_schema, t.table_name LIMIT {STREAM_TOPOLOGY_MAX}
         """)
-        edges = []
-        edge_errors = 0
-        for row in rows[:50]:
-            fqn = f"{row['table_catalog']}.{row['table_schema']}.{row['table_name']}"
-            try:
-                e = _execute_sql(f"""
-                    SELECT DISTINCT source_table_full_name, entity_type
-                    FROM system.access.table_lineage
-                    WHERE target_table_full_name = '{fqn}' AND event_time > current_timestamp() - INTERVAL 30 DAYS LIMIT 10
-                """)
-                for r in e:
-                    edges.append({"target": fqn, "source": r.get("source_table_full_name", ""), "entity_type": r.get("entity_type", "")})
-            except Exception as edge_err:
-                # C8 FIX: Log edge-fetch failures instead of silently passing
-                edge_errors += 1
-                logger.debug(f"Edge fetch failed for {fqn}: {edge_err}")
-        result = {"streaming_tables": rows, "streaming_edges": edges, "count": len(rows)}
-        if edge_errors:
-            result["edge_errors"] = edge_errors
-        return result
+        fqns = [f"{r['table_catalog']}.{r['table_schema']}.{r['table_name']}" for r in rows]
+
+        # Producer discovery + pipeline names, both off the event loop. Producers
+        # come from ONE batched table_lineage query over every streaming table (not
+        # a per-table loop), so all rendered nodes are enriched — never just the
+        # first N — and no blocking SQL runs on the event loop.
+        pipeline_names = await asyncio.to_thread(_pipeline_name_map)
+        producers, edges = await asyncio.to_thread(_stream_producers_batch, fqns)
+
+        # Enrich each streaming-table node in place: source kind, producing
+        # pipeline (id + resolved name), and freshness SLA bucket.
+        for row, fqn in zip(rows, fqns):
+            prod = producers.get(fqn, {})
+            pid = prod.get("pipeline_id")
+            age, bucket = _freshness(row.get("last_altered"))
+            row["fqn"] = fqn
+            row["source_kind"] = _classify_stream_source(row.get("data_source_format"), prod.get("sources", []))
+            row["pipeline_id"] = pid
+            row["pipeline_name"] = pipeline_names.get(pid) if pid else None
+            row["age_seconds"] = age
+            row["freshness"] = bucket
+
+        return {"streaming_tables": rows, "streaming_edges": edges, "count": len(rows)}
     except Exception:
         logger.exception("capability_closures: streaming_topology failed")
         raise HTTPException(status_code=500, detail="Failed to streaming topology.")
+
+
+def _stream_producers_batch(fqns: list[str]) -> tuple[dict[str, dict], list[dict]]:
+    """Producer sources + producing pipeline for every streaming table, in ONE
+    `system.access.table_lineage` query (avoids the per-table N-query loop that
+    both blocked the event loop and left tables past the first batch un-enriched).
+
+    Returns ({fqn: {"sources": [...], "pipeline_id": id|None}}, [edges]). Fails
+    open — an unreadable lineage view yields empties so the topology still renders
+    (just without edges), never an error.
+    """
+    if not fqns:
+        return {}, []
+    # sql_str escapes the value but does NOT add quotes — the caller supplies them.
+    in_list = ", ".join(f"'{sql_str(f)}'" for f in fqns)
+    producers: dict[str, dict] = {}
+    edges: list[dict] = []
+    try:
+        rows = _execute_sql(f"""
+            SELECT DISTINCT target_table_full_name, source_table_full_name, entity_type, entity_id
+            FROM system.access.table_lineage
+            WHERE target_table_full_name IN ({in_list})
+              AND event_time > current_timestamp() - INTERVAL {STREAM_METRICS_LOOKBACK_DAYS} DAYS
+            LIMIT {max(len(fqns) * 20, 100)}
+        """)
+    except Exception as e:
+        logger.info(f"streaming topology: producer discovery unavailable: {e}")
+        return {}, []
+    for r in rows:
+        tgt = r.get("target_table_full_name")
+        if not tgt:
+            continue
+        p = producers.setdefault(tgt, {"sources": [], "pipeline_id": None})
+        src = r.get("source_table_full_name") or ""
+        et = (r.get("entity_type") or "")
+        if src:
+            p["sources"].append(src)
+            edges.append({"target": tgt, "source": src, "entity_type": et})
+        if et.upper() == "PIPELINE" and r.get("entity_id") and not p["pipeline_id"]:
+            p["pipeline_id"] = r.get("entity_id")
+    return producers, edges
+
+
+def _pipeline_name_map() -> dict[str, str]:
+    """pipeline_id → name for all pipelines the SP can see (best-effort, one query)."""
+    try:
+        rows = _execute_sql("SELECT pipeline_id, name FROM system.lakeflow.pipelines")
+        return {r["pipeline_id"]: r.get("name") for r in rows if r.get("pipeline_id")}
+    except Exception as e:
+        logger.debug(f"pipeline name map unavailable: {e}")
+        return {}
+
+
+# --- Streaming live metrics (Tier 3) ---------------------------------------
+# flow_progress events are fetched per pipeline over the REST API and cached for
+# a short TTL so a dashboard refresh doesn't hammer the events endpoint. Status
+# comes from pipeline_update_timeline (reliable) even when no live flow events
+# have been retained.
+_FLOW_METRICS_TTL_SECONDS = int(os.environ.get("STREAM_FLOW_METRICS_TTL_SECONDS", "60"))
+_FLOW_EVENTS_MAX = 100
+# Bounded TTL cache (not a bare dict) so expired entries are actually evicted and
+# the per-pipeline cache can't grow without limit over a long-lived process.
+_flow_metrics_cache: TTLCache = TTLCache(maxsize=512, ttl=_FLOW_METRICS_TTL_SECONDS)
+
+
+def _pipeline_status_batch(pipeline_ids: list[str]) -> dict[str, dict]:
+    """Per-pipeline update health from system.lakeflow.pipeline_update_timeline.
+
+    One grouped query over all requested ids. Fail-open: returns {} if the
+    timeline is unreadable (missing privilege), so the UI just shows "unknown".
+    """
+    ids = [p for p in pipeline_ids if p]
+    if not ids:
+        return {}
+    # sql_str escapes the value but does NOT add quotes — the caller supplies them.
+    in_list = ", ".join(f"'{sql_str(p)}'" for p in ids)
+    try:
+        rows = _execute_sql(f"""
+            SELECT pipeline_id,
+                   COUNT(*) AS total_updates,
+                   SUM(CASE WHEN result_state = 'COMPLETED' THEN 1 ELSE 0 END) AS ok_updates,
+                   SUM(CASE WHEN result_state IN ('FAILED','CANCELED') THEN 1 ELSE 0 END) AS failed_updates,
+                   MAX(period_start_time) AS last_update_at,
+                   MAX_BY(result_state, period_start_time) AS last_state,
+                   AVG(DATEDIFF(SECOND, period_start_time, period_end_time)) AS avg_duration_seconds
+            FROM system.lakeflow.pipeline_update_timeline
+            WHERE pipeline_id IN ({in_list})
+              AND period_start_time >= dateadd(DAY, -{STREAM_METRICS_LOOKBACK_DAYS}, current_timestamp())
+            GROUP BY pipeline_id
+        """)
+    except Exception as e:
+        logger.info(f"streaming metrics: pipeline_update_timeline unavailable: {e}")
+        return {}
+
+    out: dict[str, dict] = {}
+    for r in rows:
+        pid = r.get("pipeline_id")
+        if not pid:
+            continue
+        total = int(r.get("total_updates") or 0)
+        ok = int(r.get("ok_updates") or 0)
+        failed = int(r.get("failed_updates") or 0)
+        last_at = str(r["last_update_at"]) if r.get("last_update_at") else None
+        age, _ = _freshness(last_at)
+        last_state = r.get("last_state")
+        # Coarse operational status. Continuous pipelines don't surface a RUNNING
+        # row here, so recency of the last update stands in for "active".
+        if last_state in ("FAILED", "CANCELED"):
+            status = "failed"
+        elif age is None:
+            status = "unknown"
+        elif age < STREAM_FRESH_SECONDS:
+            status = "active"
+        elif age < STREAM_LAGGING_SECONDS:
+            status = "idle"
+        else:
+            status = "stale"
+        out[pid] = {
+            "status": status,
+            "last_update_at": last_at,
+            "last_update_age_seconds": age,
+            "last_result_state": last_state,
+            "total_updates": total,
+            "success_rate": round(ok / total, 4) if total else None,
+            "failed_updates": failed,
+            "avg_duration_seconds": round(float(r["avg_duration_seconds"]), 1) if r.get("avg_duration_seconds") is not None else None,
+        }
+    return out
+
+
+def _pipeline_flow_metrics(pipeline_id: str) -> dict:
+    """Throughput / backlog / DQ for a pipeline from its flow_progress events.
+
+    Best-effort over the pipeline events REST API (no server-side filter — that
+    400s on some workspaces — so we fetch recent events and filter client-side).
+    Cached for a short TTL. Returns metrics_available=False when nothing usable
+    is retained (e.g. a stream that hasn't run recently), never raises.
+    """
+    hit = _flow_metrics_cache.get(pipeline_id)
+    if hit is not None:
+        return hit
+
+    result = {"metrics_available": False, "throughput_rows": None, "backlog_records": None,
+              "backlog_bytes": None, "trend": [], "data_quality": None}
+    try:
+        client = _get_client()
+        resp = client.api_client.do(
+            "GET", f"/api/2.0/pipelines/{pipeline_id}/events",
+            query={"max_results": _FLOW_EVENTS_MAX, "order": "timestamp desc"},
+        )
+        events = (resp or {}).get("events", []) if isinstance(resp, dict) else []
+        trend: list[int] = []
+        for ev in events:
+            if ev.get("event_type") != "flow_progress":
+                continue
+            fp = (ev.get("details") or {}).get("flow_progress") or {}
+            metrics = fp.get("metrics") or {}
+            out_rows = metrics.get("num_output_rows")
+            if out_rows is not None:
+                if result["throughput_rows"] is None:
+                    result["throughput_rows"] = int(out_rows)  # latest microbatch
+                if len(trend) < 20:
+                    trend.append(int(out_rows))
+            # First event carrying backlog / DQ wins (events are newest-first).
+            if result["backlog_records"] is None and metrics.get("backlog_records") is not None:
+                result["backlog_records"] = int(metrics["backlog_records"])
+            if result["backlog_bytes"] is None and metrics.get("backlog_bytes") is not None:
+                result["backlog_bytes"] = int(metrics["backlog_bytes"])
+            dq = fp.get("data_quality")
+            if result["data_quality"] is None and dq:
+                result["data_quality"] = {
+                    "dropped_records": dq.get("dropped_records"),
+                    "expectations": dq.get("expectations"),
+                }
+        result["trend"] = list(reversed(trend))  # oldest → newest for the sparkline
+        result["metrics_available"] = bool(trend) or result["backlog_records"] is not None
+    except Exception as e:
+        logger.debug(f"flow metrics unavailable for pipeline {pipeline_id}: {e}")
+
+    _flow_metrics_cache[pipeline_id] = result
+    return result
+
+
+@router.get("/api/lineage/streaming-metrics")
+async def streaming_metrics(request: Request, pipeline_ids: Optional[str] = Query(None)):
+    """Live operational metrics for the given streaming pipelines (Tier 3).
+
+    `pipeline_ids` is a comma-separated list of pipeline ids (as discovered by
+    /streaming-topology). Returns a per-pipeline map of update status + freshness
+    (from pipeline_update_timeline) plus throughput/backlog/DQ (from flow_progress
+    events, best-effort). Everything fails open so the dashboard degrades to
+    "metrics unavailable" rather than erroring.
+    """
+    ids = [p.strip() for p in (pipeline_ids or "").split(",") if p.strip()]
+    # Validate ids up front — they are interpolated into SQL and a REST path.
+    for pid in ids:
+        if not _FULL_NAME_RE.match(pid) and not _IDENTIFIER_RE.match(pid) and not _is_uuid(pid):
+            raise HTTPException(status_code=400, detail=f"Invalid pipeline id: '{pid[:50]}'")
+    if not ids:
+        return {"metrics": {}, "count": 0}
+    ids = ids[:50]  # cap fan-out
+    try:
+        status_map = await asyncio.to_thread(_pipeline_status_batch, ids)
+        # Flow-metric fetches are independent per-pipeline REST calls — run them
+        # concurrently instead of awaiting each in turn (50 pipelines was ~50×
+        # serial round-trips).
+        flows = await asyncio.gather(*[asyncio.to_thread(_pipeline_flow_metrics, pid) for pid in ids])
+        metrics: dict[str, dict] = {}
+        for pid, flow in zip(ids, flows):
+            base = dict(status_map.get(pid, {"status": "unknown"}))
+            base.update(flow)
+            metrics[pid] = base
+        return {"metrics": metrics, "count": len(metrics)}
+    except Exception:
+        logger.exception("capability_closures: streaming_metrics failed")
+        raise HTTPException(status_code=500, detail="Failed to fetch streaming metrics.")
+
+
+def _is_uuid(s: str) -> bool:
+    try:
+        uuid.UUID(str(s))
+        return True
+    except Exception:
+        return False
 
 
 # ===========================================================================

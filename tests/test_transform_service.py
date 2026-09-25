@@ -229,8 +229,11 @@ class TestLoadEdges:
 # backtrack_transform_lineage
 # ---------------------------------------------------------------------------
 class TestBacktrack:
+    # These test the pure edge path — stub the resolver fallback to None so it
+    # doesn't reach for captured-plan/LLM analysis.
     def test_no_edges_no_lineage(self):
-        with patch.object(ts, "load_edges", return_value=[]):
+        with patch.object(ts, "load_edges", return_value=[]), \
+             patch.object(ts, "_llm_fallback_trace", return_value=None):
             resp = ts.backtrack_transform_lineage("c", "s", "t", "y")
         assert resp.has_lineage is False
         assert resp.levels == []
@@ -238,17 +241,84 @@ class TestBacktrack:
     def test_target_not_in_upstream_index(self):
         # edges exist but none target col:c.s.t::y
         edges = [_edge_row("a", "z")]  # dst is col:c.s.t::z, not ::y
-        with patch.object(ts, "load_edges", return_value=edges):
+        with patch.object(ts, "load_edges", return_value=edges), \
+             patch.object(ts, "_llm_fallback_trace", return_value=None):
             resp = ts.backtrack_transform_lineage("c", "s", "t", "y")
         assert resp.has_lineage is False
 
     def test_target_is_source_column(self):
         # target col:c.s.t::y appears only as a SOURCE
         edges = [_edge_row("y", "final", src_tbl="c.s.t", dst_tbl="c.s.down")]
-        with patch.object(ts, "load_edges", return_value=edges):
+        with patch.object(ts, "load_edges", return_value=edges), \
+             patch.object(ts, "_llm_fallback_trace", return_value=None):
             resp = ts.backtrack_transform_lineage("c", "s", "t", "y")
         assert resp.has_lineage is False
         assert resp.is_source_column is True
+
+
+class TestBacktrackResolverFallback:
+    """When the edge store is empty, backtrack falls back to the column-transform
+    resolver (captured plan / CDC / stored LLM) so known derivations still render."""
+
+    def _resolver(self, columns, label="Stored LLM analysis · v1"):
+        return {"columns": columns, "source_label": label}
+
+    def test_synthesizes_trace_from_resolver(self):
+        cols = [{"target_column": "transaction_year",
+                 "source_columns": ["transaction_date"],
+                 "expression": "YEAR(TO_DATE(transaction_date))"}]
+        with patch.object(ts, "load_edges", return_value=[]), \
+             patch("backend.server.producer_source.resolve_column_transformations",
+                   return_value=self._resolver(cols)):
+            resp = ts.backtrack_transform_lineage("c", "s", "t", "transaction_year")
+        assert resp.has_lineage is True
+        assert len(resp.levels) == 2
+        # target at level 0 carries the expression; upstream at level 1
+        assert resp.levels[0].nodes[0].column == "transaction_year"
+        assert resp.levels[0].nodes[0].captured_expression == "YEAR(TO_DATE(transaction_date))"
+        assert resp.levels[1].nodes[0].column == "transaction_date"
+        edge = resp.levels[1].transforms[0]
+        assert edge.expression == "YEAR(TO_DATE(transaction_date))"
+        assert edge.category == "CAST"  # TO_DATE(...) -> CAST
+        assert resp.total_edges == 1
+
+    def test_passthrough_column_reports_as_source(self):
+        # source is the column itself -> no transformation
+        cols = [{"target_column": "customer_id", "source_columns": ["customer_id"], "expression": "customer_id"}]
+        with patch.object(ts, "load_edges", return_value=[]), \
+             patch("backend.server.producer_source.resolve_column_transformations",
+                   return_value=self._resolver(cols)):
+            resp = ts.backtrack_transform_lineage("c", "s", "t", "customer_id")
+        assert resp.has_lineage is False
+        assert resp.is_source_column is True
+
+    def test_no_matching_column_keeps_no_lineage(self):
+        cols = [{"target_column": "other_col", "source_columns": ["x"], "expression": "x + 1"}]
+        with patch.object(ts, "load_edges", return_value=[]), \
+             patch("backend.server.producer_source.resolve_column_transformations",
+                   return_value=self._resolver(cols)):
+            resp = ts.backtrack_transform_lineage("c", "s", "t", "transaction_year")
+        assert resp.has_lineage is False
+
+    def test_resolver_error_fails_open(self):
+        with patch.object(ts, "load_edges", return_value=[]), \
+             patch("backend.server.producer_source.resolve_column_transformations",
+                   side_effect=RuntimeError("no warehouse")):
+            resp = ts.backtrack_transform_lineage("c", "s", "t", "y")
+        assert resp.has_lineage is False
+
+    def test_categorize_expression(self):
+        assert ts._categorize_expression("amount * quantity") == "ARITHMETIC"
+        assert ts._categorize_expression("CASE WHEN a<1 THEN 'x' ELSE 'y' END") == "CONDITIONAL"
+        assert ts._categorize_expression("YEAR(TO_DATE(d))") == "CAST"
+        assert ts._categorize_expression("SUM(x)") == "AGGREGATE"
+        assert ts._categorize_expression("UPPER(name)") == "PROJECTION"
+        assert ts._categorize_expression("") == "UNKNOWN"
+        # compact arithmetic (no spaces) still detected...
+        assert ts._categorize_expression("amount*quantity") == "ARITHMETIC"
+        # ...but a '/' inside a string literal or a count(*) is NOT arithmetic
+        assert ts._categorize_expression("SPLIT(path, '/')") == "PROJECTION"
+        assert ts._categorize_expression("COUNT(*)") == "AGGREGATE"
 
     def test_single_hop_lineage(self):
         edges = [_edge_row("x", "y")]  # col:c.s.up::x -> col:c.s.t::y

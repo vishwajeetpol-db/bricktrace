@@ -135,6 +135,215 @@ class TestStreamingTopology:
             assert resp.status_code in (200, 400, 500)
 
 
+class TestStreamingTopologyEnrichment:
+    """streaming_topology now enriches each node with source kind, producing
+    pipeline (id + name) and freshness bucket."""
+
+    def test_nodes_enriched_with_source_and_freshness(self, app_client):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+
+        def fake_sql(sql):
+            if "table_type = 'STREAMING_TABLE'" in sql:
+                return [{"table_catalog": "main", "table_schema": "s", "table_name": "orders_stream",
+                         "data_source_format": "UNKNOWN_DATA_SOURCE_FORMAT", "last_altered": now}]
+            if "system.lakeflow.pipelines" in sql:
+                return [{"pipeline_id": "p1", "name": "orders_pipeline"}]
+            if "system.access.table_lineage" in sql:
+                return [{"target_table_full_name": "main.s.orders_stream",
+                         "source_table_full_name": "s3://bucket/raw", "entity_type": "PIPELINE", "entity_id": "p1"}]
+            return []
+
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=fake_sql):
+            resp = app_client.get("/api/lineage/streaming-topology", params={"catalog": "main"})
+            assert resp.status_code == 200
+            data = resp.json()
+            node = data["streaming_tables"][0]
+            assert node["source_kind"] == "autoloader"   # inferred from s3:// source
+            assert node["pipeline_id"] == "p1"
+            assert node["pipeline_name"] == "orders_pipeline"
+            assert node["freshness"] == "fresh"           # last_altered = now
+            assert data["streaming_edges"][0]["source"] == "s3://bucket/raw"
+
+
+class TestStreamProducersBatch:
+    """One batched table_lineage query groups producers per target + fails open."""
+
+    def test_groups_per_target_and_builds_edges(self):
+        from backend.routes import capability_closures as cc
+        rows = [
+            {"target_table_full_name": "c.s.a", "source_table_full_name": "c.s.raw_a", "entity_type": "PIPELINE", "entity_id": "p1"},
+            {"target_table_full_name": "c.s.b", "source_table_full_name": "c.s.raw_b", "entity_type": "PIPELINE", "entity_id": "p2"},
+        ]
+        with patch("backend.routes.capability_closures._execute_sql", return_value=rows):
+            producers, edges = cc._stream_producers_batch(["c.s.a", "c.s.b"])
+        assert producers["c.s.a"]["pipeline_id"] == "p1"
+        assert producers["c.s.b"]["pipeline_id"] == "p2"
+        assert {e["target"] for e in edges} == {"c.s.a", "c.s.b"}
+
+    def test_fails_open_on_error(self):
+        from backend.routes import capability_closures as cc
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=RuntimeError("no priv")):
+            assert cc._stream_producers_batch(["c.s.a"]) == ({}, [])
+        assert cc._stream_producers_batch([]) == ({}, [])
+
+    def test_in_list_values_are_quoted(self):
+        """Regression: sql_str escapes but does NOT add quotes, so the IN-list must
+        wrap each value — otherwise fqns render as column refs (UNRESOLVED_COLUMN)."""
+        from backend.routes import capability_closures as cc
+        captured = {}
+        def cap(sql):
+            captured["sql"] = sql
+            return []
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=cap):
+            cc._stream_producers_batch(["c.s.a", "c.s.b"])
+        assert "IN ('c.s.a', 'c.s.b')" in captured["sql"]
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=cap):
+            cc._pipeline_status_batch(["p1", "p2"])
+        assert "IN ('p1', 'p2')" in captured["sql"]
+
+
+class TestStreamingMetrics:
+    """GET /api/lineage/streaming-metrics — per-pipeline status + flow metrics."""
+
+    def test_no_ids_returns_empty(self, app_client):
+        resp = app_client.get("/api/lineage/streaming-metrics")
+        assert resp.status_code == 200
+        assert resp.json() == {"metrics": {}, "count": 0}
+
+    def test_invalid_pipeline_id_rejected(self, app_client):
+        resp = app_client.get("/api/lineage/streaming-metrics", params={"pipeline_ids": "bad id!!"})
+        assert resp.status_code == 400
+
+    def test_returns_status_and_flow_metrics(self, app_client):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+
+        def fake_sql(sql):
+            if "pipeline_update_timeline" in sql:
+                return [{"pipeline_id": "5fe5c6e3-5250-4b4b-bae1-12c14c46d41e",
+                         "total_updates": "10", "ok_updates": "9", "failed_updates": "1",
+                         "last_update_at": now, "last_state": "COMPLETED",
+                         "avg_duration_seconds": "42.5"}]
+            return []
+
+        events = {"events": [
+            {"event_type": "flow_progress", "details": {"flow_progress": {
+                "metrics": {"num_output_rows": 500, "backlog_records": 12, "backlog_bytes": 2048},
+                "data_quality": {"dropped_records": 3, "expectations": []}}}},
+            {"event_type": "flow_progress", "details": {"flow_progress": {
+                "metrics": {"num_output_rows": 400}}}},
+            {"event_type": "update_progress", "details": {}},
+        ]}
+        client = MagicMock()
+        client.api_client.do.return_value = events
+
+        # Clear the module TTL cache so the fake events are actually fetched.
+        from backend.routes import capability_closures as cc
+        cc._flow_metrics_cache.clear()
+
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=fake_sql), \
+             patch("backend.routes.capability_closures._get_client", return_value=client):
+            resp = app_client.get("/api/lineage/streaming-metrics",
+                                  params={"pipeline_ids": "5fe5c6e3-5250-4b4b-bae1-12c14c46d41e"})
+            assert resp.status_code == 200
+            m = resp.json()["metrics"]["5fe5c6e3-5250-4b4b-bae1-12c14c46d41e"]
+            assert m["status"] == "active"                 # last update = now
+            assert m["success_rate"] == 0.9
+            assert m["throughput_rows"] == 500             # latest microbatch
+            assert m["backlog_records"] == 12
+            assert m["metrics_available"] is True
+            assert m["trend"] == [400, 500]                # oldest → newest
+            assert m["data_quality"]["dropped_records"] == 3
+
+    def test_status_buckets_idle_and_stale(self):
+        """last-update recency drives idle/stale/failed classification."""
+        from datetime import datetime, timedelta, timezone
+        from backend.routes import capability_closures as cc
+        now = datetime.now(timezone.utc)
+
+        def make_sql(age_delta, state="COMPLETED"):
+            ts = (now - age_delta).isoformat()
+            def fake(sql):
+                return [{"pipeline_id": "p", "total_updates": "5", "ok_updates": "5",
+                         "failed_updates": "0", "last_update_at": ts, "last_state": state,
+                         "avg_duration_seconds": None}]
+            return fake
+
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=make_sql(timedelta(hours=5))):
+            assert cc._pipeline_status_batch(["p"])["p"]["status"] == "idle"
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=make_sql(timedelta(days=3))):
+            assert cc._pipeline_status_batch(["p"])["p"]["status"] == "stale"
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=make_sql(timedelta(minutes=1), "FAILED")):
+            assert cc._pipeline_status_batch(["p"])["p"]["status"] == "failed"
+
+    def test_status_batch_fails_open_on_sql_error(self):
+        from backend.routes import capability_closures as cc
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=RuntimeError("no priv")):
+            assert cc._pipeline_status_batch(["p"]) == {}
+        assert cc._pipeline_status_batch([]) == {}
+
+    def test_flow_metrics_cache_hit(self):
+        """A second call within the TTL returns the cached value without re-fetching."""
+        from unittest.mock import MagicMock
+        from backend.routes import capability_closures as cc
+        cc._flow_metrics_cache.clear()
+        client = MagicMock()
+        client.api_client.do.return_value = {"events": [
+            {"event_type": "flow_progress", "details": {"flow_progress": {"metrics": {"num_output_rows": 7}}}}]}
+        with patch("backend.routes.capability_closures._get_client", return_value=client):
+            first = cc._pipeline_flow_metrics("pcache")
+            second = cc._pipeline_flow_metrics("pcache")
+        assert first == second
+        assert client.api_client.do.call_count == 1  # second call served from cache
+
+    def test_metrics_endpoint_500_on_unexpected_error(self, app_client):
+        with patch("backend.routes.capability_closures._pipeline_status_batch", side_effect=RuntimeError("boom")):
+            resp = app_client.get("/api/lineage/streaming-metrics", params={"pipeline_ids": "p1"})
+            assert resp.status_code == 500
+
+    def test_flow_metrics_fail_open_when_events_unavailable(self, app_client):
+        def fake_sql(sql):
+            return []  # no timeline data either
+
+        client = MagicMock()
+        client.api_client.do.side_effect = RuntimeError("no access")
+        from backend.routes import capability_closures as cc
+        cc._flow_metrics_cache.clear()
+
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=fake_sql), \
+             patch("backend.routes.capability_closures._get_client", return_value=client):
+            resp = app_client.get("/api/lineage/streaming-metrics", params={"pipeline_ids": "p1"})
+            assert resp.status_code == 200
+            m = resp.json()["metrics"]["p1"]
+            assert m["status"] == "unknown"
+            assert m["metrics_available"] is False
+
+
+class TestStreamingHelpers:
+    """Unit coverage for the classification + freshness helpers."""
+
+    def test_classify_stream_source(self):
+        from backend.routes.capability_closures import _classify_stream_source as c
+        assert c("delta", ["main.topic.kafka_ingest"]) == "kafka"
+        assert c(None, ["some.kinesis.stream"]) == "kinesis"
+        assert c(None, ["azure_eventhub_src"]) == "eventhub"
+        assert c("csv", []) == "autoloader"
+        assert c(None, ["abfss://c@a.dfs.core.windows.net/x"]) == "autoloader"
+        assert c("delta", []) == "delta"
+        assert c("UNKNOWN_DATA_SOURCE_FORMAT", []) == "stream"
+
+    def test_freshness_buckets(self):
+        from datetime import datetime, timedelta, timezone
+        from backend.routes.capability_closures import _freshness
+        now = datetime.now(timezone.utc)
+        assert _freshness(None) == (None, "unknown")
+        assert _freshness("not-a-date")[1] == "unknown"
+        assert _freshness(now.isoformat())[1] == "fresh"
+        assert _freshness((now - timedelta(hours=5)).isoformat())[1] == "lagging"
+        assert _freshness((now - timedelta(days=3)).isoformat())[1] == "stale"
+
+
 class TestDQTrends:
     """GET /api/dq-rules/trends endpoint.
 
