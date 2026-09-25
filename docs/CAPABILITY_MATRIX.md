@@ -22,7 +22,7 @@
 | # | Capability | Status | Route(s) |
 |---|-----------|--------|----------|
 | 01 | Automatic Discovery | ✅ | dbt/Airflow import + foreign-catalog crawl + manual register |
-| 02 | End-to-End Lineage | ✅ | `/api/lineage/bi-consumers`, `/api/lineage/streaming-topology` |
+| 02 | End-to-End Lineage | ✅ | `/api/lineage/bi-consumers`, `/api/lineage/streaming-topology`, `/api/lineage/streaming-metrics` |
 | 03 | Column-Level Lineage | ✅ | `/api/sublineage` |
 | 04 | Transformation Logic | ✅ | `/api/transform`, `/api/analyze-producer` |
 | 05 | Multi-Platform | ✅ | OpenLineage producer bridge (`/api/external/ol-bridge/*`) |
@@ -75,6 +75,19 @@ A plain-language lens over the technical lineage graph for non-engineers — a *
 | Data-only vs Data + processing | ✅ | Sub-toggle to show only datasets (and how they connect) or datasets + the jobs/pipelines that move data between them · `businessDetail` in `lineageStore` |
 | Precise dataset lineage (`table_edges`) | ✅ | Data-only uses the real per-row `(source→target)` pairs from `system.access.table_lineage` instead of cross-producting an entity's inputs × outputs — fixes the "everything connected to everything" mesh on hub tables · `LineageResponse.table_edges`, `GET /api/lineage/trace` |
 | AI "Explain this lineage" | ✅ | Lightbulb (business view) → modal with a plain-English summary + ordered source→process→output walkthrough of the current on-screen graph · `POST /api/lineage/explain` (`llm.explain_lineage_graph`) |
+
+## 3d. Streaming topology & health (v2.6.x)
+
+A tabbed streaming-observability screen — a **Topology** DAG tab and a **Metrics** dashboard tab — that discovers streaming tables and monitors their pipelines. All metrics fail open (missing privilege / no retained events → "unavailable", never an error).
+
+| Capability | Status | What it does |
+|---|---|---|
+| Topology DAG | ✅ | Interactive source→stream graph (reactflow); freshness-coloured nodes, source-kind icons; drill-down into lineage · `components/graph/StreamTopologyGraph.tsx` |
+| Ingestion-source classification | ✅ | Kafka / Kinesis / Event Hub / Auto Loader / Delta, inferred from `data_source_format` + upstream source fqns · `_classify_stream_source` |
+| Producing-pipeline mapping | ✅ | Each stream tied to its producing pipeline (id + name) from `system.access.table_lineage` + `system.lakeflow.pipelines` |
+| Freshness SLA | ✅ | fresh / lagging / stale bucket from `last_altered` (env-tunable thresholds) |
+| Live pipeline metrics | ✅ | Per-pipeline update status, success rate, duration (`system.lakeflow.pipeline_update_timeline`) + throughput, backlog, data-quality from DLT `flow_progress` events, with trend sparklines · `/api/lineage/streaming-metrics` |
+| Live controls | ✅ | KPI strip, freshness filter, fuzzy catalog typeahead, 30s auto-refresh |
 
 ## 4. Platform & UX
 

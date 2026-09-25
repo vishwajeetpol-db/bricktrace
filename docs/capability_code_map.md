@@ -25,7 +25,7 @@
 | # | Capability | Status | Primary Files | Route(s) | Notes |
 |---|-----------|--------|---------------|----------|-------|
 | 01 | Automatic Discovery | HAVE | `routes/external_sources.py`, `federated_service.py` | `POST /api/external/dbt/import`, `/api/external/airflow/import`, `/api/external/discover`, `GET /api/lineage/federated-overlay` | dbt manifest + Airflow DAG import + manual registration + foreign catalog crawl |
-| 02 | End-to-End Lineage | HAVE | `routes/external_sources.py`, `routes/capability_closures.py` | `/api/lineage/bi-consumers`, `/api/lineage/streaming-topology` | BI tool detection via query history user-agents + streaming table topology + dbt/Airflow + federated + Delta Sharing |
+| 02 | End-to-End Lineage | HAVE | `routes/external_sources.py`, `routes/capability_closures.py` | `/api/lineage/bi-consumers`, `/api/lineage/streaming-topology`, `/api/lineage/streaming-metrics` | BI tool detection via query history user-agents + **streaming topology (enriched: source-kind, producing pipeline, freshness) with a live metrics dashboard (status/throughput/backlog/DQ)** + dbt/Airflow + federated + Delta Sharing |
 | 03 | Column-Level Lineage | HAVE | `sublineage/backtrack.py`, `transform_service.py` | `GET /api/sublineage` | — |
 | 04 | Transformation Logic | HAVE | `transform_service.py`, `build_service.py`, `plan_capture/` | `GET /api/transform`, `POST /api/analyze-producer` | — |
 | 05 | Multi-Platform | HAVE | `routes/external_sources.py` (ol-bridge section), `federated_service.py` | `POST /api/external/ol-bridge/register`, `POST /api/external/ol-bridge/ingest/{source_id}`, `GET /api/external/ol-bridge/sources`, `GET /api/external/ol-bridge/events`, `GET /api/lineage/federated-overlay` | OL producer bridge: external OL-emitting platforms (Snowflake Horizon, BigQuery via OL proxy, Spark + openlineage-spark, Flink, dbt Cloud, Airflow 2.7+) register once and push standard RunEvents to a dedicated receive URL; edges stored in `external_ol_bridge_events` and surfaced in the lineage graph |
@@ -378,7 +378,7 @@ Backend **90.67 %** (1,482 passing); frontend **599** tests (96.4 % lines / 85.4
 
 | File | Role |
 |---|---|
-| `frontend/src/components/layout/SideNav.tsx` | Route-aware collapsible left rail on every screen. PRIMARY (Home, Search, Lineage Explorer, Impact, Data Quality, Reports), SECONDARY (Business Glossary, OpenLineage Export, BI Consumers, Streaming Topology), BOTTOM (Settings, Admin). Filters Data Quality via `useFeatureFlagEnabled("metadata_only.hide_data_quality")`. **Notifications removed** (moved to the bell). |
+| `frontend/src/components/layout/SideNav.tsx` | Route-aware collapsible left rail on every screen. PRIMARY (Home, Search, Lineage Explorer, Impact, Data Quality, Reports), SECONDARY (Business Glossary, OpenLineage Export, Streaming Topology, then **BI Consumers — disabled/"coming soon"** via `NavItem.disabled`), BOTTOM (Settings, Admin). Filters Data Quality via `useFeatureFlagEnabled("metadata_only.hide_data_quality")`. **Notifications removed** (moved to the bell). |
 | `frontend/src/components/layout/HeaderActions.tsx` | Top-right cluster on every screen: notifications bell (`goNotifications` + unread badge from `/api/notifications/unread-count`), help, theme toggle. |
 | `frontend/src/components/browse/PageShell.tsx` | `SideNav` + slim top bar (title + global search + `HeaderActions`); wraps most non-graph screens. |
 
@@ -403,3 +403,29 @@ Backend **90.67 %** (1,482 passing); frontend **599** tests (96.4 % lines / 85.4
 ### I4. Gates after this work
 
 Backend **1914** passing; frontend **655** passing; `tsc` + build clean. Deployed to FEVM + Azure sandbox.
+
+---
+
+## Part J — Streaming Topology observability, transform re-parse fix & nav polish (2026-09, branch `feature/phase0-workspace-id`)
+
+### J1. Streaming Topology rebuilt into a Tiers 1–3 observability screen (commits `a0aaac5` + `4b389cc` + `f602d34`, Cap 02)
+
+| File | Role |
+|---|---|
+| `backend/routes/capability_closures.py` | **Enriched `GET /api/lineage/streaming-topology`**: each node gains `source_kind` (`_classify_stream_source` sniffs `data_source_format` + upstream source fqns — streaming tables report `UNKNOWN_DATA_SOURCE_FORMAT`), `pipeline_id`+`pipeline_name` (producer from `system.access.table_lineage` entity_type=PIPELINE; names batched once via `_pipeline_name_map` → `system.lakeflow.pipelines`), and `age_seconds`+`freshness` bucket (`_freshness`; fresh<1h / lagging<24h / stale). **New `GET /api/lineage/streaming-metrics?pipeline_ids=…`** (comma list, cap 50, uuid/identifier-validated): `_pipeline_status_batch` (one grouped query over `system.lakeflow.pipeline_update_timeline`, `MAX_BY(result_state, period_start_time)` for last state → status active/idle/stale/failed) + `_pipeline_flow_metrics` (throughput/backlog/DQ from DLT `flow_progress` events via `client.api_client.do("GET", /api/2.0/pipelines/{id}/events)` — **no server-side filter** (400s on some workspaces), 60s TTL cache `_flow_metrics_cache`, trend = last 20 `num_output_rows` oldest→newest). Everything **fails open**. Env: `STREAM_FRESH_SECONDS`, `STREAM_LAGGING_SECONDS`, `STREAM_METRICS_LOOKBACK_DAYS` (**90**, widened from 30 so stale streams still map to a producer), `STREAM_FLOW_METRICS_TTL_SECONDS`. |
+| `frontend/src/components/StreamingTopologyPanel.tsx` | KPI strip + **Topology / Metrics** tabs, freshness-filter pills, 30s "Live" auto-refresh, **fuzzy catalog typeahead** (subsequence match, keyboard-navigable), drill-down (`goTableLineage`). Metrics table: status badge, throughput, backlog, freshness age, inline SVG `Sparkline`. Chrome uses the brand **accent** (`#FF4520`), not emerald. |
+| `frontend/src/components/graph/StreamTopologyGraph.tsx` | Self-contained reactflow source→stream DAG (own instance, not the lineage store): freshness-coloured custom nodes + source-kind icons, two-column layered layout. In `graph/**` → **coverage-excluded**. |
+| `frontend/src/api/client.ts` | `getStreamingTopology` / `getStreamingMetrics` + `StreamNode`/`StreamEdge`/`StreamPipelineMetrics`/`StreamingTopologyResponse`/`StreamingMetricsResponse` types. |
+| `tests/test_routes_capability_closures.py` | `TestStreamingTopologyEnrichment`, `TestStreamingMetrics` (status buckets, cache hit, fail-open, 400/500 paths), `TestStreamingHelpers`. FE: `StreamingTopologyPanel.test.tsx` (stubs the reactflow graph — flaky in jsdom + excluded; covers metric variants, age buckets, Live toggle, fuzzy picker). |
+
+### J2. Deterministic transformation-lineage re-parse fix (commit `aee1b53`, Cap 04)
+
+`transformation_lineage/versioning/change_detection.py`: `PARSER_VERSION` bumped **5→6**. The change-detection token is `sha256("parser_v{N}\x00"+source)` and the pipeline early-terminates on unchanged tokens; an earlier parser improvement (cross-cell `.withColumn`, step-wise expressions) shipped without bumping the key, so unchanged notebooks kept the pre-fix `mapping_count=0` result forever → empty `lineage_edge_endpoints` → the panel looped on "Generate". The bump forces a one-time full re-parse. Verified live: `transactions_transformed_silver` → 11 col→col hops. `backend/transform_service.py` also gained a resolver-based backtrack fallback (`_llm_fallback_trace`) so a table with a stored analysis but no built edges still shows transformations.
+
+### J3. Navigation polish (commit `96db0f4`)
+
+`SideNav.tsx`: added reusable `NavItem.disabled` (greyed-out, `aria-disabled`, "coming soon", no navigation); **BI Consumers** (unimplemented) moved below Streaming Topology and disabled.
+
+### J4. Gates after this work
+
+Backend **1950** passing (coverage gate 91.1%); frontend **685** passing (branch gate 85.3%); `tsc` + build clean. Deployed to FEVM + Azure sandbox.
