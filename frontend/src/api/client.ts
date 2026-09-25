@@ -656,6 +656,62 @@ export interface AnalysisCompare {
   }[];
 }
 
+// --- Streaming topology + metrics ---
+export type StreamSourceKind = "kafka" | "kinesis" | "eventhub" | "autoloader" | "delta" | "stream";
+export type StreamFreshness = "fresh" | "lagging" | "stale" | "unknown";
+
+export interface StreamNode {
+  table_catalog: string;
+  table_schema: string;
+  table_name: string;
+  fqn?: string;
+  data_source_format?: string;
+  last_altered?: string;
+  source_kind?: StreamSourceKind;
+  pipeline_id?: string | null;
+  pipeline_name?: string | null;
+  age_seconds?: number | null;
+  freshness?: StreamFreshness;
+}
+
+export interface StreamEdge {
+  source: string;
+  target: string;
+  entity_type?: string;
+  relationship?: string;
+}
+
+export interface StreamingTopologyResponse {
+  streaming_tables: StreamNode[];
+  streaming_edges: StreamEdge[];
+  count: number;
+  available?: boolean;
+  error?: string;
+  edge_errors?: number;
+}
+
+export interface StreamPipelineMetrics {
+  status?: "active" | "idle" | "stale" | "failed" | "unknown";
+  last_update_at?: string | null;
+  last_update_age_seconds?: number | null;
+  last_result_state?: string | null;
+  total_updates?: number;
+  success_rate?: number | null;
+  failed_updates?: number;
+  avg_duration_seconds?: number | null;
+  metrics_available?: boolean;
+  throughput_rows?: number | null;
+  backlog_records?: number | null;
+  backlog_bytes?: number | null;
+  trend?: number[];
+  data_quality?: { dropped_records?: number | null; expectations?: unknown } | null;
+}
+
+export interface StreamingMetricsResponse {
+  metrics: Record<string, StreamPipelineMetrics>;
+  count: number;
+}
+
 export const api = {
   getUserInfo: () => fetchJson<UserInfo>(`${BASE}/user-info`),
 
@@ -1040,4 +1096,15 @@ export const api = {
     if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
     return res.json() as Promise<{ status: string; run_id: string }>;
   },
+
+  // --- Streaming topology + live metrics ---
+  getStreamingTopology: (catalog?: string) =>
+    fetchJson<StreamingTopologyResponse>(
+      `${BASE}/lineage/streaming-topology${catalog ? `?catalog=${encodeURIComponent(catalog)}` : ""}`,
+    ),
+
+  getStreamingMetrics: (pipelineIds: string[]) =>
+    fetchJson<StreamingMetricsResponse>(
+      `${BASE}/lineage/streaming-metrics?pipeline_ids=${encodeURIComponent(pipelineIds.join(","))}`,
+    ),
 };
