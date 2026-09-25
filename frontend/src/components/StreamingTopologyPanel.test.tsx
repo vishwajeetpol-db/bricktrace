@@ -170,6 +170,23 @@ describe("StreamingTopologyPanel", () => {
     expect(screen.getByTestId("topo-graph")).toHaveTextContent("graph:1");
   });
 
+  it("fuzzy-filters catalogs and fills the input on select", async () => {
+    global.fetch = routeFetch({
+      "/api/catalogs": { catalogs: ["prod_sales", "prod_marketing", "dev_sandbox"] },
+      "streaming-topology": { streaming_tables: [], streaming_edges: [] },
+    }) as any;
+    const user = userEvent.setup();
+    render(<StreamingTopologyPanel />);
+    const input = screen.getByPlaceholderText(/Catalog/);
+    await user.click(input);
+    // subsequence "psl" matches prod_saLes but not the others
+    await user.type(input, "psl");
+    const option = await screen.findByText("prod_sales");
+    expect(screen.queryByText("dev_sandbox")).not.toBeInTheDocument();
+    await user.click(option);
+    expect((input as HTMLInputElement).value).toBe("prod_sales");
+  });
+
   it("shows unavailable error", async () => {
     global.fetch = routeFetch({ "streaming-topology": { available: false, error: "no streaming" } }) as any;
     const user = userEvent.setup();

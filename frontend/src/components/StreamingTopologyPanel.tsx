@@ -61,7 +61,45 @@ export function StreamingTopologyPanel({ catalog = "" }: Props) {
   const [tab, setTab] = useState<"topology" | "metrics">("topology");
   const [freshFilter, setFreshFilter] = useState<StreamFreshness | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [catalogs, setCatalogs] = useState<string[]>([]);
+  const [showSuggest, setShowSuggest] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(-1);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const comboRef = useRef<HTMLDivElement | null>(null);
+
+  // Catalog list for the fuzzy picker — loaded once, best-effort.
+  useEffect(() => {
+    api.getCatalogs().then((d) => setCatalogs(d.catalogs || [])).catch(() => {});
+  }, []);
+
+  // Close the suggestion dropdown on an outside click.
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (comboRef.current && !comboRef.current.contains(e.target as Node)) setShowSuggest(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+
+  // Subsequence fuzzy match (chars in order, gaps allowed), ranked by tightness.
+  const suggestions = useMemo(() => {
+    const q = inputCatalog.trim().toLowerCase();
+    if (!q) return catalogs.slice(0, 8);
+    const scored: { name: string; score: number }[] = [];
+    for (const name of catalogs) {
+      const lower = name.toLowerCase();
+      let qi = 0, first = -1, last = -1;
+      for (let i = 0; i < lower.length && qi < q.length; i++) {
+        if (lower[i] === q[qi]) {
+          if (first < 0) first = i;
+          last = i;
+          qi++;
+        }
+      }
+      if (qi === q.length) scored.push({ name, score: (last - first) + (lower.startsWith(q) ? -100 : 0) });
+    }
+    return scored.sort((a, b) => a.score - b.score).slice(0, 8).map((s) => s.name);
+  }, [inputCatalog, catalogs]);
 
   const fetchMetrics = useCallback(async (streamNodes: StreamNode[]) => {
     const pids = Array.from(new Set(streamNodes.map((n) => n.pipeline_id).filter(Boolean))) as string[];
@@ -146,17 +184,74 @@ export function StreamingTopologyPanel({ catalog = "" }: Props) {
         </p>
 
         <div className="flex gap-2 mb-5">
-          <input
-            className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-accent/50"
-            placeholder="Catalog (optional — leave blank for all)"
-            value={inputCatalog}
-            onChange={(e) => setInputCatalog(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && fetchTopology()}
-          />
+          <div ref={comboRef} className="relative flex-1">
+            <input
+              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-accent/50"
+              placeholder="Catalog (optional — type to search, leave blank for all)"
+              value={inputCatalog}
+              role="combobox"
+              aria-expanded={showSuggest}
+              aria-autocomplete="list"
+              onChange={(e) => {
+                setInputCatalog(e.target.value);
+                setShowSuggest(true);
+                setActiveIdx(-1);
+              }}
+              onFocus={() => setShowSuggest(true)}
+              onKeyDown={(e) => {
+                if (showSuggest && suggestions.length) {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setActiveIdx((i) => Math.max(i - 1, 0));
+                    return;
+                  }
+                  if (e.key === "Enter" && activeIdx >= 0) {
+                    e.preventDefault();
+                    setInputCatalog(suggestions[activeIdx]);
+                    setShowSuggest(false);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    setShowSuggest(false);
+                    return;
+                  }
+                }
+                if (e.key === "Enter") {
+                  setShowSuggest(false);
+                  fetchTopology();
+                }
+              }}
+            />
+            {showSuggest && suggestions.length > 0 && (
+              <ul className="absolute z-20 mt-1 w-full max-h-60 overflow-y-auto rounded-lg border border-white/[0.1] bg-[#141821] shadow-xl py-1">
+                {suggestions.map((c, i) => (
+                  <li key={c}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInputCatalog(c);
+                        setShowSuggest(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 text-sm font-mono truncate ${
+                        i === activeIdx ? "bg-accent/20 text-accent-light" : "text-slate-300 hover:bg-white/[0.06]"
+                      }`}
+                    >
+                      {c}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <button
             onClick={fetchTopology}
             disabled={loading}
-            className="flex items-center gap-1.5 px-4 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 rounded-lg text-sm font-medium text-emerald-300 transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 px-4 py-2 bg-accent hover:bg-accent-dark text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
           >
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
             {loading ? "Scanning..." : "Detect Topology"}
@@ -167,7 +262,7 @@ export function StreamingTopologyPanel({ catalog = "" }: Props) {
               title="Auto-refresh every 30s"
               className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
                 autoRefresh
-                  ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-300"
+                  ? "bg-accent/20 border-accent/40 text-accent-light"
                   : "bg-white/[0.04] border-white/[0.08] text-slate-400 hover:text-slate-200"
               }`}
             >
@@ -247,7 +342,7 @@ function TabBtn({ active, onClick, Icon, label }: { active: boolean; onClick: ()
     <button
       onClick={onClick}
       className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-colors ${
-        active ? "bg-emerald-500/20 text-emerald-300" : "text-slate-400 hover:text-slate-200"
+        active ? "bg-accent/20 text-accent-light" : "text-slate-400 hover:text-slate-200"
       }`}
     >
       <Icon size={14} />
