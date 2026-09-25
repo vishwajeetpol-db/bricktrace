@@ -559,10 +559,20 @@ function PropagationWizard() {
     setResult(null);
     setApplied(new Set());
     const qs = new URLSearchParams({ catalog: parts.catalog, schema: parts.schema, table: parts.table });
-    const data = await jget<PropagationResult>(`/api/glossary/propagate-suggestions?${qs}`);
+    const data = await jget<Partial<PropagationResult>>(`/api/glossary/propagate-suggestions?${qs}`);
     setRunning(false);
     if (!data) { setError('Failed to compute suggestions.'); return; }
-    setResult(data);
+    // The backend's early returns (no linked terms / no downstream) omit
+    // source_terms + downstream_count, so normalize to safe defaults — reading
+    // .length on the raw response would otherwise crash the panel.
+    setResult({
+      source_table: data.source_table ?? source,
+      source_terms: data.source_terms ?? [],
+      downstream_count: data.downstream_count ?? 0,
+      suggestions: data.suggestions ?? [],
+      suggestion_count: data.suggestion_count ?? (data.suggestions?.length ?? 0),
+      note: data.note,
+    });
   };
 
   const applyLink = async (targetTable: string, term: MissingTerm) => {

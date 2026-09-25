@@ -267,6 +267,21 @@ describe("GlossaryPanel", () => {
     expect(screen.getByText(/No terms linked to source table/)).toBeInTheDocument();
   });
 
+  it("propagation: does not crash on the backend's minimal early-return shape", async () => {
+    // The real endpoint returns {status, suggestions:[], note} with NO source_terms
+    // when nothing is linked — the panel must tolerate the missing fields.
+    global.fetch = fullFetch({ "propagate-suggestions": { status: "ok", suggestions: [], note: "No terms linked to source table" } }) as any;
+    const user = userEvent.setup();
+    render(<GlossaryPanel />);
+    await screen.findByText("Revenue");
+    await user.click(screen.getByText("Propagation"));
+    await user.type(screen.getByPlaceholderText("catalog.schema.table"), "main.bronze.sales");
+    await user.click(screen.getByText("Find suggestions"));
+    expect(await screen.findByText(/No terms linked to source table/)).toBeInTheDocument();
+    // "none linked" branch renders instead of throwing on source_terms.length
+    expect(screen.getByText(/none linked to/)).toBeInTheDocument();
+  });
+
   it("propagation: rejects an incomplete table name", async () => {
     global.fetch = fullFetch() as any;
     const user = userEvent.setup();
