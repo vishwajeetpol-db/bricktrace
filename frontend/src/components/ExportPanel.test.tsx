@@ -146,6 +146,110 @@ describe("ExportPanel", () => {
     expect((URL as any).createObjectURL).toHaveBeenCalled();
   });
 
+  it("shows an error when preview fails", async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 }) as any;
+    const user = userEvent.setup();
+    render(<ExportPanel catalog="main" schema="s" />);
+    await user.click(screen.getByText("Preview"));
+    expect(await screen.findByText(/Preview failed/)).toBeInTheDocument();
+  });
+
+  it("shows an error when export fails", async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 503 }) as any;
+    const user = userEvent.setup();
+    render(<ExportPanel catalog="main" schema="s" />);
+    await user.click(screen.getByText("Export as OpenLineage JSON"));
+    expect(await screen.findByText(/Export failed/)).toBeInTheDocument();
+  });
+
+  it("copies the payload to the clipboard", async () => {
+    global.fetch = routeFetch({
+      "export/openlineage": { events: [{ eventType: "COMPLETE" }], count: 1, namespace: "n", byte_size: 10, conformance: { valid: true, event_count: 1, invalid_count: 0, issues: [] } },
+    }) as any;
+    const user = userEvent.setup();
+    // Define AFTER userEvent.setup() — its own clipboard stub would otherwise win.
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<ExportPanel catalog="main" schema="s" />);
+    await user.click(screen.getByText("Copy"));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
+  });
+
+  it("reports a clipboard failure", async () => {
+    global.fetch = routeFetch({
+      "export/openlineage": { events: [], count: 0, namespace: "n", byte_size: 2, conformance: { valid: true, event_count: 0, invalid_count: 0, issues: [] } },
+    }) as any;
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: vi.fn().mockRejectedValue(new Error("no clip")) }, configurable: true });
+    render(<ExportPanel catalog="main" schema="s" />);
+    await user.click(screen.getByText("Copy"));
+    expect(await screen.findByText(/Clipboard unavailable/)).toBeInTheDocument();
+  });
+
+  it("shows the empty-scope message when there are no events", async () => {
+    global.fetch = routeFetch({
+      "export/openlineage": { events: [], count: 0, namespace: "databricks://h", byte_size: 2, conformance: { valid: true, event_count: 0, invalid_count: 0, issues: [] } },
+    }) as any;
+    const user = userEvent.setup();
+    render(<ExportPanel catalog="main" schema="s" />);
+    await user.click(screen.getByText("Preview"));
+    expect(await screen.findByText(/nothing to export/)).toBeInTheDocument();
+  });
+
+  it("shows a capture error when the snapshot request fails", async () => {
+    global.fetch = vi.fn().mockImplementation((url: string, opts?: any) => {
+      if (String(url).includes("snapshots/capture")) return Promise.resolve({ ok: false, status: 400, json: async () => ({ detail: "bad scope" }) });
+      return Promise.resolve({ ok: true, json: async () => ({ snapshots: [] }) });
+    }) as any;
+    const user = userEvent.setup();
+    render(<ExportPanel catalog="main" />);
+    await user.click(screen.getByText("Graph Snapshots"));
+    await user.click(screen.getByText("Capture Now"));
+    expect(await screen.findByText("bad scope")).toBeInTheDocument();
+  });
+
+  it("copies ND-JSON using an already-fetched preview (no re-fetch)", async () => {
+    const fetchMock = routeFetch({
+      "export/openlineage": { events: [{ eventType: "COMPLETE" }, { eventType: "COMPLETE" }], count: 2, namespace: "n", byte_size: 20, conformance: { valid: true, event_count: 2, invalid_count: 0, issues: [] } },
+    });
+    global.fetch = fetchMock as any;
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<ExportPanel catalog="main" schema="s" />);
+    await user.click(screen.getByText("ND-JSON"));
+    await user.click(screen.getByText("Preview"));  // one fetch
+    await screen.findByText(/conformant/);
+    const callsAfterPreview = fetchMock.mock.calls.length;
+    await user.click(screen.getByText("Copy"));      // should reuse preview, no new fetch
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(fetchMock.mock.calls.length).toBe(callsAfterPreview);
+    // ND-JSON payload = newline-joined events
+    expect(writeText.mock.calls[0][0]).toContain("\n");
+  });
+
+  it("swallows a snapshot-list load failure", async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error("down")) as any;
+    const user = userEvent.setup();
+    render(<ExportPanel catalog="main" />);
+    await user.click(screen.getByText("Graph Snapshots"));
+    // No crash; the empty-state renders once loading settles.
+    expect(await screen.findByText(/No snapshots yet/)).toBeInTheDocument();
+  });
+
+  it("reports a capture network failure", async () => {
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("snapshots/capture")) return Promise.reject(new Error("boom"));
+      return Promise.resolve({ ok: true, json: async () => ({ snapshots: [] }) });
+    }) as any;
+    const user = userEvent.setup();
+    render(<ExportPanel catalog="main" />);
+    await user.click(screen.getByText("Graph Snapshots"));
+    await user.click(screen.getByText("Capture Now"));
+    expect(await screen.findByText(/could not reach the server/)).toBeInTheDocument();
+  });
+
   it("loads snapshots tab and shows empty state", async () => {
     global.fetch = routeFetch({ "/api/snapshots": { snapshots: [] } }) as any;
     const user = userEvent.setup();

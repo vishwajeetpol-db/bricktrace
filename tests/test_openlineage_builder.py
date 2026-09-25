@@ -59,11 +59,60 @@ class TestDatasetAndDQ:
         assert set(ds["facets"]).issuperset({"dataSource", "symlinks", "schema", "documentation", "ownership"})
         assert ds["facets"]["symlinks"]["identifiers"][0]["name"] == "c.s.t"
 
+    def test_doc_and_ownership_facets_none_when_empty(self):
+        assert olb.documentation_facet(None) is None
+        assert olb.documentation_facet("") is None
+        assert olb.documentation_facet("hi")["description"] == "hi"
+        assert olb.ownership_facet(None) is None
+        assert olb.ownership_facet("me")["owners"][0]["name"] == "me"
+
+    def test_dataset_omits_facets_without_data(self):
+        ds = olb.build_dataset("databricks://h", "c", "s", "t")
+        # No columns/comment/owner/lineage/dq -> only the always-on facets.
+        assert set(ds["facets"]) == {"dataSource", "symlinks"}
+
     def test_dq_facet_custom(self):
         f = olb.data_quality_rules_facet([{"column_name": "amt", "rule_type": "NOT_NULL", "severity": "ERROR"}])
         assert f["rules"][0]["ruleType"] == "NOT_NULL"
         assert f["_producer"] == olb.PRODUCER
         assert olb.data_quality_rules_facet([]) is None
+
+
+class TestJobAndRunFacets:
+    def test_job_type_defaults_to_job(self):
+        f = olb.job_type_facet("")
+        assert f["jobType"] == "JOB"
+        assert f["processingType"] == "BATCH" and f["integration"] == "DATABRICKS"
+        assert olb.job_type_facet("pipeline")["jobType"] == "PIPELINE"
+
+    def test_sql_job_facet(self):
+        assert olb.sql_job_facet(None) is None
+        assert olb.sql_job_facet("")  is None
+        f = olb.sql_job_facet("SELECT 1")
+        assert f["query"] == "SELECT 1" and f["_producer"] == olb.PRODUCER
+
+    def test_source_code_facet(self):
+        assert olb.source_code_facet(None) is None
+        f = olb.source_code_facet("print(1)")
+        assert f["language"] == "python" and f["sourceCode"] == "print(1)"
+        assert olb.source_code_facet("x", language="scala")["language"] == "scala"
+
+    def test_documentation_job_facet(self):
+        assert olb.documentation_job_facet(None) is None
+        assert olb.documentation_job_facet("docs")["description"] == "docs"
+
+    def test_nominal_time_run_facet(self):
+        assert olb.nominal_time_run_facet(None) is None
+        f = olb.nominal_time_run_facet("2026-01-01T00:00:00Z")
+        assert f["nominalStartTime"] == "2026-01-01T00:00:00Z"
+        assert "nominalEndTime" not in f
+        f2 = olb.nominal_time_run_facet("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z")
+        assert f2["nominalEndTime"] == "2026-01-02T00:00:00Z"
+
+    def test_error_message_run_facet(self):
+        assert olb.error_message_run_facet(None) is None
+        f = olb.error_message_run_facet("boom")
+        assert f["message"] == "boom" and f["programmingLanguage"] == "SQL"
 
 
 class TestRunEvent:
@@ -103,6 +152,34 @@ class TestValidation:
     def test_flags_dataset_missing_name(self):
         ev = self._good(); ev["outputs"] = [{"namespace": "x"}]
         assert any("namespace + name" in i for i in olb.validate_event(ev))
+
+    def test_non_dict_event(self):
+        assert olb.validate_event("nope") == ["event is not an object"]
+
+    def test_flags_each_missing_top_level_field(self):
+        for field, needle in [
+            ("eventTime", "eventTime is required"),
+            ("producer", "producer is required"),
+            ("schemaURL", "schemaURL is required"),
+        ]:
+            ev = self._good(); del ev[field]
+            assert any(needle in i for i in olb.validate_event(ev)), field
+
+    def test_flags_missing_run_and_job(self):
+        ev = self._good(); ev["run"] = {}
+        assert any("run.runId is required" in i for i in olb.validate_event(ev))
+        ev = self._good(); del ev["job"]
+        assert any("job is required" in i for i in olb.validate_event(ev))
+
+    def test_flags_missing_job_namespace_and_name(self):
+        ev = self._good(); ev["job"] = {"name": "j"}
+        assert any("job.namespace is required" in i for i in olb.validate_event(ev))
+        ev = self._good(); ev["job"] = {"namespace": "databricks"}
+        assert any("job.name is required" in i for i in olb.validate_event(ev))
+
+    def test_flags_non_list_io(self):
+        ev = self._good(); ev["inputs"] = {"not": "a list"}
+        assert any("inputs must be a list" in i for i in olb.validate_event(ev))
 
     def test_batch_summary(self):
         good, bad = self._good(), self._good()

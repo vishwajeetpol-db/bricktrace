@@ -47,6 +47,12 @@ def test_table_to_openlineage_dataset():
     assert "dataSource" in ds["facets"]
 
 
+def test_app_host_fails_open():
+    import backend.routes.openlineage as ol
+    with patch("backend.routes.openlineage._get_client", side_effect=RuntimeError("no client")):
+        assert ol._app_host() is None
+
+
 def test_build_openlineage_run_event():
     import backend.routes.openlineage as ol
     ev = ol._build_openlineage_run_event([], {"name": "t"}, "JOB", "1", "2024-01-01T00:00:00Z")
@@ -124,6 +130,52 @@ class TestExport:
                    side_effect=RuntimeError("boom")):
             resp = app_client.get("/api/export/openlineage", params={"catalog": "cat"})
         assert resp.status_code == 500
+
+    def test_export_ndjson_format(self, app_client):
+        with patch("backend.routes.openlineage.get_table_lineage",
+                   return_value=self._lineage_with_flow()):
+            resp = app_client.get("/api/export/openlineage", params={
+                "catalog": "cat", "format": "ndjson"})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/x-ndjson")
+        # One JSON object per line.
+        import json
+        lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+        assert len(lines) == 1
+        assert json.loads(lines[0])["outputs"][0]["name"] == "cat.sch.tgt"
+
+    def test_export_rejects_bad_event_type(self, app_client):
+        resp = app_client.get("/api/export/openlineage", params={
+            "catalog": "cat", "event_type": "DONE"})
+        assert resp.status_code == 400
+
+    def test_export_rejects_bad_format(self, app_client):
+        resp = app_client.get("/api/export/openlineage", params={
+            "catalog": "cat", "format": "yaml"})
+        assert resp.status_code == 400
+
+    def test_export_with_data_quality_facet(self, app_client):
+        dq_rows = [{"table_fqn": "cat.sch.tgt", "column_name": "amt",
+                    "rule_type": "NOT_NULL", "expression": None, "severity": "ERROR"}]
+        with patch("backend.routes.openlineage.get_table_lineage",
+                   return_value=self._lineage_with_flow()), \
+             patch("backend.routes.openlineage._execute_sql", return_value=dq_rows):
+            resp = app_client.get("/api/export/openlineage", params={
+                "catalog": "cat", "schema": "sch", "include_data_quality": True})
+        assert resp.status_code == 200
+        facets = resp.json()["events"][0]["outputs"][0]["facets"]
+        assert "dataQualityRules" in facets
+        assert facets["dataQualityRules"]["rules"][0]["ruleType"] == "NOT_NULL"
+
+    def test_export_dq_query_failure_is_swallowed(self, app_client):
+        # _dq_rules_for_scope fails open — export still succeeds without the facet.
+        with patch("backend.routes.openlineage.get_table_lineage",
+                   return_value=self._lineage_with_flow()), \
+             patch("backend.routes.openlineage._execute_sql", side_effect=RuntimeError("no dq table")):
+            resp = app_client.get("/api/export/openlineage", params={
+                "catalog": "cat", "schema": "sch", "include_data_quality": True})
+        assert resp.status_code == 200
+        assert "dataQualityRules" not in resp.json()["events"][0]["outputs"][0]["facets"]
 
 
 # ---------------------------------------------------------------------------
