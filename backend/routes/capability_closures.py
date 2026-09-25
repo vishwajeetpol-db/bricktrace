@@ -94,7 +94,11 @@ def _safe_identifier(value: Optional[str]) -> Optional[str]:
 # different "fresh" windows, so the thresholds are env-tunable.
 STREAM_FRESH_SECONDS = int(os.environ.get("STREAM_FRESH_SECONDS", str(60 * 60)))          # < 1h  → fresh
 STREAM_LAGGING_SECONDS = int(os.environ.get("STREAM_LAGGING_SECONDS", str(24 * 60 * 60)))  # < 24h → lagging, else stale
-STREAM_METRICS_LOOKBACK_DAYS = int(os.environ.get("STREAM_METRICS_LOOKBACK_DAYS", "30"))
+# Producer-discovery + metrics window. The producer→stream relationship is
+# stable, so this is generous (a stream that last ran weeks ago should still show
+# its producing pipeline). Freshness/staleness is computed from last_altered, not
+# this window, so a long lookback never overstates how fresh a stream is.
+STREAM_METRICS_LOOKBACK_DAYS = int(os.environ.get("STREAM_METRICS_LOOKBACK_DAYS", "90"))
 
 
 def _classify_stream_source(data_source_format: Optional[str], source_fqns: list[str]) -> str:
