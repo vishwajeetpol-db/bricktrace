@@ -29,7 +29,10 @@ from pyspark.errors import AnalysisException
 #   3  self-loop guard; sqlparse pinned to 0.4.4
 #   4  edge-endpoints join pins source by node id (kills same-column cross-joins)
 #   5  CTE resolution (WITH ... AS) — resolve cte.col through the CTE to its base source
-PARSER_VERSION = "5"
+#   6  step-wise expression builder, join-derived lineage, cross-cell .withColumn
+#      chains (commit 39267bf shipped these parser gains but never bumped the key,
+#      so unchanged notebooks kept the pre-fix mapping_count=0 result forever)
+PARSER_VERSION = "6"
 
 
 def content_sha256(text: str) -> str:
