@@ -255,7 +255,8 @@ def _stream_producers_batch(fqns: list[str]) -> tuple[dict[str, dict], list[dict
     """
     if not fqns:
         return {}, []
-    in_list = ", ".join(sql_str(f) for f in fqns)
+    # sql_str escapes the value but does NOT add quotes — the caller supplies them.
+    in_list = ", ".join(f"'{sql_str(f)}'" for f in fqns)
     producers: dict[str, dict] = {}
     edges: list[dict] = []
     try:
@@ -315,7 +316,8 @@ def _pipeline_status_batch(pipeline_ids: list[str]) -> dict[str, dict]:
     ids = [p for p in pipeline_ids if p]
     if not ids:
         return {}
-    in_list = ", ".join(sql_str(p) for p in ids)
+    # sql_str escapes the value but does NOT add quotes — the caller supplies them.
+    in_list = ", ".join(f"'{sql_str(p)}'" for p in ids)
     try:
         rows = _execute_sql(f"""
             SELECT pipeline_id,

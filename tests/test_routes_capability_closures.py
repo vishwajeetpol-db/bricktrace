@@ -187,6 +187,21 @@ class TestStreamProducersBatch:
             assert cc._stream_producers_batch(["c.s.a"]) == ({}, [])
         assert cc._stream_producers_batch([]) == ({}, [])
 
+    def test_in_list_values_are_quoted(self):
+        """Regression: sql_str escapes but does NOT add quotes, so the IN-list must
+        wrap each value — otherwise fqns render as column refs (UNRESOLVED_COLUMN)."""
+        from backend.routes import capability_closures as cc
+        captured = {}
+        def cap(sql):
+            captured["sql"] = sql
+            return []
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=cap):
+            cc._stream_producers_batch(["c.s.a", "c.s.b"])
+        assert "IN ('c.s.a', 'c.s.b')" in captured["sql"]
+        with patch("backend.routes.capability_closures._execute_sql", side_effect=cap):
+            cc._pipeline_status_batch(["p1", "p2"])
+        assert "IN ('p1', 'p2')" in captured["sql"]
+
 
 class TestStreamingMetrics:
     """GET /api/lineage/streaming-metrics — per-pipeline status + flow metrics."""
