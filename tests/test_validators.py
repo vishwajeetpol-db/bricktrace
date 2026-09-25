@@ -12,8 +12,25 @@ from fastapi import HTTPException
 from unittest.mock import MagicMock, patch
 
 from backend.validators import (
-    _IDENTIFIER_RE, _FULL_NAME_RE, _validate, sql_str, require_admin,
+    _IDENTIFIER_RE, _FULL_NAME_RE, _validate, sql_str, require_admin, like_escape,
 )
+
+
+class TestLikeEscape:
+    def test_escapes_wildcards_and_backslash(self):
+        # '_' and '%' must be neutralised so they don't act as LIKE wildcards.
+        assert like_escape("my_schema") == "my\\_schema"
+        assert like_escape("a%b") == "a\\%b"
+        # backslash first, so an escaped pair isn't split
+        assert like_escape("c\\d") == "c\\\\d"
+
+    def test_handles_none_and_empty(self):
+        assert like_escape(None) == ""
+        assert like_escape("") == ""
+
+    def test_prefix_stays_a_prefix_after_escape(self):
+        # a catalog.schema. prefix keeps its dots (dots aren't LIKE metachars)
+        assert like_escape("lattice_lineage.my_schema.") == "lattice\\_lineage.my\\_schema."
 
 
 class TestIdentifierRegex:

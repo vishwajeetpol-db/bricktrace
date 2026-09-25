@@ -167,6 +167,24 @@ class TestExport:
         assert "dataQualityRules" in facets
         assert facets["dataQualityRules"]["rules"][0]["ruleType"] == "NOT_NULL"
 
+    def test_export_dq_scope_escapes_like_wildcards(self, app_client):
+        # A schema name with '_' must be escaped in the LIKE prefix, or it would
+        # match another schema's dq_rules (my_schema also matches myXschema).
+        captured = {}
+        def fake_sql(sql):
+            if "dq_rules" in sql:
+                captured["sql"] = sql
+            return []
+        with patch("backend.routes.openlineage.get_table_lineage",
+                   return_value=self._lineage_with_flow()), \
+             patch("backend.routes.openlineage._execute_sql", side_effect=fake_sql):
+            resp = app_client.get("/api/export/openlineage", params={
+                "catalog": "cat", "schema": "my_schema", "include_data_quality": True})
+        assert resp.status_code == 200
+        # like_escape adds `\_`; sql_str then doubles the backslash for the literal
+        # layer, so the emitted SQL carries `my\\_schema` (Spark unwinds it to `\_`).
+        assert "cat.my\\\\_schema.%" in captured["sql"]
+
     def test_export_dq_query_failure_is_swallowed(self, app_client):
         # _dq_rules_for_scope fails open — export still succeeds without the facet.
         with patch("backend.routes.openlineage.get_table_lineage",

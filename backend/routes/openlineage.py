@@ -29,7 +29,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from databricks.sdk.service.sql import StatementState
 from backend.lineage_service import _get_client, get_table_lineage, get_schema_column_lineage
-from backend.validators import _validate, redact_url, require_admin, sql_str
+from backend.validators import _validate, redact_url, require_admin, sql_str, like_escape
 from backend import openlineage_builder as olb
 
 logger = logging.getLogger(__name__)
@@ -124,9 +124,14 @@ def _dq_rules_for_scope(catalog: str, schema: Optional[str]) -> dict[str, list[d
     dq_table = f"{LINEAGE_CATALOG}.{LINEAGE_SCHEMA_NAME}.dq_rules"
     out: dict[str, list[dict]] = {}
     try:
+        # Escape LIKE wildcards in the prefix (catalog/schema names routinely
+        # contain '_', which LIKE would treat as "any char" and pull in another
+        # schema's rules) BEFORE sql_str escapes the literal. The trailing % is
+        # the intended prefix wildcard.
+        safe_prefix = sql_str(like_escape(fqn_prefix))
         rows = _execute_sql(
             f"SELECT table_fqn, column_name, rule_type, expression, severity "
-            f"FROM {dq_table} WHERE table_fqn LIKE '{sql_str(fqn_prefix)}%'"
+            f"FROM {dq_table} WHERE table_fqn LIKE '{safe_prefix}%'"
         )
         for r in rows:
             out.setdefault(r.get("table_fqn", ""), []).append(r)

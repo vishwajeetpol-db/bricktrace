@@ -41,7 +41,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from databricks.sdk.service.sql import StatementState
 from backend.lineage_service import _get_client
-from backend.validators import _validate, require_admin, sql_str
+from backend.validators import _validate, require_admin, sql_str, like_escape
 
 logger = logging.getLogger(__name__)
 
@@ -128,27 +128,6 @@ def _uuid_or_new(value: Optional[str], name: str) -> str:
         return str(uuid.UUID(str(value)))
     except (ValueError, AttributeError, TypeError):
         raise HTTPException(status_code=400, detail=f"Invalid {name}: must be a UUID")
-
-
-def _like_escape(s: str) -> str:
-    """Escape LIKE pattern metacharacters, for values used inside a LIKE pattern.
-
-    A LIKE pattern is a SECOND escape layer on top of the SQL literal, and
-    sql_str only handles the literal. Feeding its output straight into
-    `LIKE '%…%'` was therefore wrong in both directions:
-
-      * `C:\\data` became the literal `%c:\\data%`, whose `\\d` is an escape
-        character in the middle of a pattern — Spark raises
-        INVALID_FORMAT.ESC_IN_THE_MIDDLE, which the handler's generic except
-        turned into an undiagnosable 500. Before the escaping change, plain
-        quote-doubling left the backslash to be swallowed and search worked.
-      * `%` and `_` were left unescaped, so they silently acted as wildcards.
-
-    Escape for the pattern layer FIRST; sql_str then escapes for the literal
-    layer, and the two unwind in the right order. discovery.py:62 already does
-    this for `%` — same reason.
-    """
-    return (s or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _is_admin(request: Request) -> bool:
@@ -246,8 +225,8 @@ async def list_terms(
     # the literal and let the rest of it execute as SQL.
     conditions = ["1=1"]
     if q:
-        # Pattern layer first (see _like_escape), then the literal layer.
-        safe_q = sql_str(_like_escape(q[:100]).lower())
+        # Pattern layer first (see like_escape), then the literal layer.
+        safe_q = sql_str(like_escape(q[:100]).lower())
         conditions.append(f"(lower(name) LIKE '%{safe_q}%' OR lower(definition) LIKE '%{safe_q}%')")
     if domain:
         conditions.append(f"domain = '{sql_str(domain, limit=100)}'")

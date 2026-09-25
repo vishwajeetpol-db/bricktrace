@@ -54,6 +54,20 @@ def sql_str(s: object, limit: int | None = None) -> str:
     return v.replace("\\", "\\\\").replace("'", "''")
 
 
+def like_escape(s: object) -> str:
+    """Escape LIKE-pattern metacharacters for a value used inside a LIKE pattern.
+
+    A LIKE pattern is a SECOND escape layer on top of the SQL literal, and
+    `sql_str` only handles the literal. Feeding a raw value into `LIKE '…%'` is
+    wrong in two ways: `%` and `_` silently act as wildcards (so `my_schema`
+    also matches `myXschema`), and a mid-value backslash trips Spark's
+    INVALID_FORMAT.ESC_IN_THE_MIDDLE. Escape for the pattern layer FIRST (here),
+    then wrap the result in `sql_str` for the literal layer — the two unwind in
+    the right order. Relies on Spark's default `\\` LIKE escape character.
+    """
+    return ("" if s is None else str(s)).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def redact_url(url: object) -> str:
     """Reduce a URL to scheme://host for display.
 
