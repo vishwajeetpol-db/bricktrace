@@ -20,6 +20,8 @@ type NavItem = {
   action?: () => void;
   href?: string;
   adminOnly?: boolean;
+  /** Rendered visibly greyed-out and non-interactive (feature not built yet). */
+  disabled?: boolean;
 };
 
 // Primary destinations (mirror the home rail), then a secondary group so every
@@ -36,8 +38,9 @@ const PRIMARY: NavItem[] = [
 const SECONDARY: NavItem[] = [
   { label: "Business Glossary", icon: BookOpen, action: goGlossary, views: ["glossary"] },
   { label: "OpenLineage Export", icon: Download, action: goExport, views: ["export"] },
-  { label: "BI Consumers", icon: Monitor, action: goBiConsumers, views: ["biConsumers"] },
   { label: "Streaming Topology", icon: Radio, action: goStreaming, views: ["streaming"] },
+  // Not implemented yet — parked at the bottom and disabled until built.
+  { label: "BI Consumers", icon: Monitor, action: goBiConsumers, views: ["biConsumers"], disabled: true },
 ];
 const BOTTOM: NavItem[] = [
   { label: "Settings", icon: SettingsIcon, action: goControlPanel, views: ["controlPanel"] },
@@ -87,6 +90,21 @@ function SideNav({ initialCollapsed }: { initialCollapsed?: boolean }) {
         {!collapsed && item.label}
       </>
     );
+    if (item.disabled) {
+      const title = collapsed ? `${item.label} — coming soon` : "Coming soon";
+      return (
+        <button key={item.label} type="button" disabled aria-disabled="true" title={title}
+          className={`w-full flex items-center gap-3 py-2.5 rounded-xl text-[13px] font-medium whitespace-nowrap opacity-40 cursor-not-allowed select-none border border-transparent text-[#ffe4e6]/75 ${collapsed ? "justify-center px-0" : "px-4"}`}>
+          <Icon size={17} className="shrink-0" />
+          {!collapsed && (
+            <span className="flex items-center gap-2">
+              {item.label}
+              <span className="text-[9px] uppercase tracking-wide text-[#ffe4e6]/50 border border-white/15 rounded px-1 py-px">soon</span>
+            </span>
+          )}
+        </button>
+      );
+    }
     return item.href ? (
       <a key={item.label} href={item.href} target="_blank" rel="noopener noreferrer"
          title={collapsed ? item.label : undefined} className={cls}>

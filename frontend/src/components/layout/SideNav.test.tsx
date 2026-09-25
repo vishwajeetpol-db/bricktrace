@@ -63,6 +63,25 @@ describe("SideNav", () => {
     expect(nav.goControlPanel).toHaveBeenCalled();
   });
 
+  it("renders BI Consumers as disabled (not built) and does not navigate on click", async () => {
+    const user = userEvent.setup();
+    render(<SideNav />);
+    const btn = screen.getByText("BI Consumers").closest("button")!;
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute("aria-disabled", "true");
+    await user.click(btn);
+    expect(nav.goBiConsumers).not.toHaveBeenCalled();
+  });
+
+  it("orders BI Consumers after Streaming Topology in the rail", () => {
+    render(<SideNav />);
+    const labels = screen.getAllByRole("button").map((b) => b.textContent || "");
+    const streaming = labels.findIndex((t) => t.includes("Streaming Topology"));
+    const bi = labels.findIndex((t) => t.includes("BI Consumers"));
+    expect(streaming).toBeGreaterThanOrEqual(0);
+    expect(bi).toBeGreaterThan(streaming);
+  });
+
   it("opens global search from the Search item", async () => {
     const user = userEvent.setup();
     render(<SideNav />);
