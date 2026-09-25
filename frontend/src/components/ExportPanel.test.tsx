@@ -29,7 +29,7 @@ describe("ExportPanel", () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
-    useLineageStore.setState({ isAdmin: false });
+    useLineageStore.setState({ isAdmin: false, allTables: [] as any });
   });
 
   it("hides the import tab from non-admins", () => {
@@ -50,6 +50,32 @@ describe("ExportPanel", () => {
     render(<ExportPanel catalog="main" schema="s" />);
     expect(screen.getByText("Export & Interop")).toBeInTheDocument();
     expect(screen.getByText("Export as OpenLineage JSON")).toBeInTheDocument();
+  });
+
+  it("lets the user pick a scope when none is provided (fixes always-disabled export)", async () => {
+    // Reached from the sidebar with no browse context: no catalog prop.
+    useLineageStore.setState({ allTables: [
+      { name: "a", fqdn: "cat1.s1.a", catalog: "cat1", schema: "s1", table_type: "MANAGED" },
+      { name: "b", fqdn: "cat1.s2.b", catalog: "cat1", schema: "s2", table_type: "MANAGED" },
+      { name: "c", fqdn: "cat2.s.c", catalog: "cat2", schema: "s", table_type: "MANAGED" },
+    ] as any });
+    const fetchMock = routeFetch({ "export/openlineage": { events: [], count: 0, namespace: "n", byte_size: 2, conformance: { valid: true, event_count: 0, invalid_count: 0, issues: [] } } });
+    global.fetch = fetchMock as any;
+    const user = userEvent.setup();
+    render(<ExportPanel />);
+    // With no scope, export is disabled.
+    const exportBtn = screen.getByText("Export as OpenLineage JSON").closest("button")!;
+    expect(exportBtn).toBeDisabled();
+    // Pick a catalog -> export enables and the request carries that catalog.
+    await user.selectOptions(screen.getByLabelText("Catalog"), "cat1");
+    expect(exportBtn).not.toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Schema"), "s2");
+    await user.click(screen.getByText("Preview"));
+    await waitFor(() => {
+      const url = String(fetchMock.mock.calls.at(-1)?.[0]);
+      expect(url).toContain("catalog=cat1");
+      expect(url).toContain("schema=s2");
+    });
   });
 
   it("exports openlineage json", async () => {

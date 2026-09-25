@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   Share2, Download, Copy, Eye, CheckCircle2, AlertTriangle, Loader2, Camera,
   FileJson, Upload, ShieldCheck, Columns3, BookText, UserRound, GitBranch, Clock, Check,
 } from 'lucide-react';
 import { useLineageStore } from '../store/lineageStore';
+import { api } from '../api/client';
 
 /**
  * ExportPanel — OpenLineage export/import + graph snapshots.
@@ -31,7 +32,31 @@ export function ExportPanel({ catalog = '', schema = '' }: { catalog?: string; s
   // backend admin-gates it. Hide the tab for non-admins rather than showing a
   // control that always 403s.
   const isAdmin = useLineageStore((s) => s.isAdmin);
+  const allTables = useLineageStore((s) => s.allTables);
+  const setAllTables = useLineageStore((s) => s.setAllTables);
   const [activeTab, setActiveTab] = useState<'export' | 'import' | 'snapshots'>('export');
+
+  // Scope is self-service: seed from the browsed catalog/schema (props) but let
+  // the user pick, so reaching this screen from the sidebar (no browse context)
+  // still works instead of leaving the export permanently disabled.
+  const [scopeCatalog, setScopeCatalog] = useState(catalog);
+  const [scopeSchema, setScopeSchema] = useState(schema);
+
+  // Load the table index if it isn't already hydrated (direct entry point).
+  useEffect(() => {
+    if (allTables.length === 0) {
+      api.getTables().then((d) => setAllTables(d.tables || [])).catch(() => { /* picker stays empty */ });
+    }
+  }, [allTables.length, setAllTables]);
+
+  const catalogs = useMemo(
+    () => Array.from(new Set(allTables.map((t) => t.catalog))).filter(Boolean).sort(),
+    [allTables],
+  );
+  const schemas = useMemo(
+    () => Array.from(new Set(allTables.filter((t) => t.catalog === scopeCatalog).map((t) => t.schema))).filter(Boolean).sort(),
+    [allTables, scopeCatalog],
+  );
 
   // Export controls
   const [facets, setFacets] = useState<Record<FacetKey, boolean>>({
@@ -51,8 +76,8 @@ export function ExportPanel({ catalog = '', schema = '' }: { catalog?: string; s
   const [captureError, setCaptureError] = useState<string | null>(null);
 
   const exportParams = (format: 'json' | 'ndjson') => {
-    const p = new URLSearchParams({ catalog, format });
-    if (schema) p.set('schema', schema);
+    const p = new URLSearchParams({ catalog: scopeCatalog, format });
+    if (scopeSchema) p.set('schema', scopeSchema);
     p.set('include_schema', String(facets.schema));
     p.set('include_column_lineage', String(facets.column_lineage));
     p.set('include_ownership', String(facets.ownership));
@@ -93,7 +118,7 @@ export function ExportPanel({ catalog = '', schema = '' }: { catalog?: string; s
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `openlineage_${catalog}${schema ? '.' + schema : ''}_${new Date().toISOString().slice(0, 10)}.${fmt === 'ndjson' ? 'ndjson' : 'json'}`;
+      a.download = `openlineage_${scopeCatalog}${scopeSchema ? '.' + scopeSchema : ''}_${new Date().toISOString().slice(0, 10)}.${fmt === 'ndjson' ? 'ndjson' : 'json'}`;
       a.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -135,7 +160,7 @@ export function ExportPanel({ catalog = '', schema = '' }: { catalog?: string; s
   const loadSnapshots = async () => {
     setSnapshotLoading(true);
     try {
-      const params = catalog ? `?scope=${catalog}${schema ? '.' + schema : ''}` : '';
+      const params = scopeCatalog ? `?scope=${scopeCatalog}${scopeSchema ? '.' + scopeSchema : ''}` : '';
       const res = await fetch(`/api/snapshots${params}`);
       const data = await res.json();
       setSnapshots(data.snapshots || []);
@@ -148,12 +173,12 @@ export function ExportPanel({ catalog = '', schema = '' }: { catalog?: string; s
 
   const captureSnapshot = async () => {
     setCaptureError(null);
-    if (!catalog) { setCaptureError('Select a catalog before capturing a snapshot.'); return; }
+    if (!scopeCatalog) { setCaptureError('Select a catalog before capturing a snapshot.'); return; }
     try {
       const res = await fetch('/api/snapshots/capture', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ catalog, schema_name: schema || null }),
+        body: JSON.stringify({ catalog: scopeCatalog, schema_name: scopeSchema || null }),
       });
       if (!res.ok) {
         let detail = `Capture failed (HTTP ${res.status})`;
@@ -201,12 +226,38 @@ export function ExportPanel({ catalog = '', schema = '' }: { catalog?: string; s
 
       {activeTab === 'export' && (
         <div className="space-y-4">
-          <div className="p-4 bg-surface-50 rounded-xl border border-white/[0.06] flex items-center justify-between">
-            <div>
+          <div className="p-4 bg-surface-50 rounded-xl border border-white/[0.06]">
+            <div className="flex items-center justify-between mb-2">
               <div className="text-[11px] uppercase tracking-wider text-slate-500">Scope</div>
-              <div className="text-[14px] font-mono text-accent-light mt-0.5">{catalog || '—'}{schema ? '.' + schema : catalog ? ' · all schemas' : ''}</div>
+              <FileJson size={18} className="text-slate-600" />
             </div>
-            <FileJson size={20} className="text-slate-600" />
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                aria-label="Catalog"
+                value={scopeCatalog}
+                onChange={(e) => { setScopeCatalog(e.target.value); setScopeSchema(''); setPreview(null); }}
+                className="px-3 py-2 bg-surface-100 border border-white/[0.08] rounded-lg text-[13px] font-mono text-slate-200 focus:border-accent/40 focus:outline-none min-w-[200px]"
+              >
+                <option value="">Select a catalog…</option>
+                {/* Keep the seeded catalog selectable even before the index loads. */}
+                {scopeCatalog && !catalogs.includes(scopeCatalog) && <option value={scopeCatalog}>{scopeCatalog}</option>}
+                {catalogs.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <select
+                aria-label="Schema"
+                value={scopeSchema}
+                onChange={(e) => { setScopeSchema(e.target.value); setPreview(null); }}
+                disabled={!scopeCatalog}
+                className="px-3 py-2 bg-surface-100 border border-white/[0.08] rounded-lg text-[13px] font-mono text-slate-200 focus:border-accent/40 focus:outline-none disabled:opacity-50 min-w-[180px]"
+              >
+                <option value="">All schemas</option>
+                {scopeSchema && !schemas.includes(scopeSchema) && <option value={scopeSchema}>{scopeSchema}</option>}
+                {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <span className="text-[12px] font-mono text-accent-light">
+                {scopeCatalog ? `${scopeCatalog}${scopeSchema ? '.' + scopeSchema : ' · all schemas'}` : 'no scope selected'}
+              </span>
+            </div>
           </div>
 
           {/* Facet toggles */}
@@ -255,15 +306,15 @@ export function ExportPanel({ catalog = '', schema = '' }: { catalog?: string; s
                 </button>
               ))}
             </div>
-            <button onClick={runPreview} disabled={!catalog || previewing}
+            <button onClick={runPreview} disabled={!scopeCatalog || previewing}
               className="flex items-center gap-1.5 px-3.5 py-2 bg-surface-100 border border-white/[0.08] text-slate-200 rounded-lg text-[13px] font-medium hover:border-accent/40 disabled:opacity-50 transition-colors">
               {previewing ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />} Preview
             </button>
-            <button onClick={download} disabled={!catalog || exporting}
+            <button onClick={download} disabled={!scopeCatalog || exporting}
               className="flex items-center gap-1.5 px-3.5 py-2 bg-accent text-white rounded-lg text-[13px] font-medium hover:bg-accent-dark disabled:opacity-50 transition-colors">
               {exporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} Export as OpenLineage JSON
             </button>
-            <button onClick={copyPayload} disabled={!catalog}
+            <button onClick={copyPayload} disabled={!scopeCatalog}
               className="flex items-center gap-1.5 px-3.5 py-2 bg-surface-100 border border-white/[0.08] text-slate-200 rounded-lg text-[13px] font-medium hover:border-accent/40 disabled:opacity-50 transition-colors">
               {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />} {copied ? 'Copied' : 'Copy'}
             </button>
@@ -334,8 +385,8 @@ export function ExportPanel({ catalog = '', schema = '' }: { catalog?: string; s
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <p className="text-slate-500 text-[13px] flex items-center gap-1.5"><Clock size={13} /> Point-in-time graph snapshots for historical comparison.</p>
-            <button onClick={captureSnapshot} disabled={!catalog}
-              title={!catalog ? 'Select a catalog first' : undefined}
+            <button onClick={captureSnapshot} disabled={!scopeCatalog}
+              title={!scopeCatalog ? 'Select a catalog first' : undefined}
               className="flex items-center gap-1.5 px-3.5 py-2 bg-accent text-white rounded-lg text-[13px] font-medium hover:bg-accent-dark disabled:opacity-50 transition-colors">
               <Camera size={14} /> Capture Now
             </button>
