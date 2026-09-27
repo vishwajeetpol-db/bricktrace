@@ -22,6 +22,14 @@ describe("HeaderActions", () => {
     expect(goNotifications).toHaveBeenCalled();
   });
 
+  it("opens the Help & Support drawer when Help is clicked", async () => {
+    const user = userEvent.setup();
+    render(<HeaderActions />);
+    expect(screen.queryByText("Help & Support")).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText("Help"));
+    expect(await screen.findByText("Help & Support")).toBeInTheDocument();
+  });
+
   it("toggles the theme", async () => {
     const user = userEvent.setup();
     render(<HeaderActions />);

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Bell, HelpCircle, Sun, Moon } from "lucide-react";
 import { useThemeStore } from "../../store/themeStore";
 import { goNotifications } from "../../hooks/useRouter";
+import HelpSupport from "../HelpSupport";
 
 /** Shared top-right action cluster: notifications, help, theme toggle.
  *  Rendered on every screen's top bar so the controls stay in one place. */
@@ -9,6 +10,7 @@ export default function HeaderActions() {
   const theme = useThemeStore((s) => s.theme);
   const toggleTheme = useThemeStore((s) => s.toggleTheme);
   const [unread, setUnread] = useState(0);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   useEffect(() => {
     fetch("/api/notifications/unread-count")
@@ -32,9 +34,15 @@ export default function HeaderActions() {
           </span>
         )}
       </button>
-      <button title="Help" aria-label="Help" className="text-slate-400 hover:text-slate-200 transition-colors">
+      <button
+        onClick={() => setHelpOpen(true)}
+        title="Help & support"
+        aria-label="Help"
+        className="text-slate-400 hover:text-slate-200 transition-colors"
+      >
         <HelpCircle size={18} />
       </button>
+      <HelpSupport open={helpOpen} onClose={() => setHelpOpen(false)} />
       <button
         onClick={toggleTheme}
         title={theme === "dark" ? "Light mode" : "Dark mode"}
