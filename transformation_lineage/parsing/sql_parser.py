@@ -319,43 +319,309 @@ def _extract_ctes(stmt_sql: str) -> tuple[list[tuple[str, str]], str]:
     return ctes, rest  # rest = the main query after the CTE block
 
 
-def _cte_column_map(
+# ── Multi-hop CTE resolution (mirrors the PySpark AST parser) ──────────────
+# The PySpark parser (pyspark_ast_parser) traces a column back to its ultimate
+# base-table source through a chain of intermediate DataFrames and expands the
+# intermediates into a numbered step-wise derivation on a single edge
+# (`_build_step_expr`). The helpers below give the SQL parser the same two
+# capabilities for chained CTEs — `WITH a AS (...), b AS (... FROM a) <main>` —
+# so `b.col` resolves through `a` to the base table and the edge carries a
+# `Step 1 / Step 2 / …` derivation, instead of collapsing to a bare name.
+
+
+def _strip_over_clauses(expr: str) -> str:
+    """Remove every ``OVER ( … )`` window spec from `expr` (balanced-paren aware).
+
+    Window PARTITION BY / ORDER BY keys are not data sources for the aggregated
+    value, so they are excluded before VALUE-column extraction — matching the
+    PySpark parser, which attributes lineage to the aggregated value, not the
+    partition key. The `\\bover` anchor is matched against the full string so
+    identifiers ending in "over" (e.g. ``rollover``) are not misfired.
+    """
+    if not expr:
+        return expr
+    result = expr
+    while True:
+        m = re.search(r"\bover\s*\(", result, re.IGNORECASE)
+        if not m:
+            break
+        open_idx = m.end() - 1
+        depth = 0
+        close_idx = -1
+        for k in range(open_idx, len(result)):
+            if result[k] == "(":
+                depth += 1
+            elif result[k] == ")":
+                depth -= 1
+                if depth == 0:
+                    close_idx = k
+                    break
+        if close_idx == -1:
+            result = result[: m.start()] + " "
+            break
+        result = result[: m.start()] + " " + result[close_idx + 1 :]
+    return result
+
+
+def _expr_col_refs(expr: str) -> list[str]:
+    """Column identifiers referenced in `expr`: the trailing segment of every
+    ``alias.col``, plus bare identifiers (functions, keywords, type names and
+    string literals excluded). Order-preserving and de-duplicated.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for _alias, col in _QUALREF_RE.findall(expr or ""):
+        if col not in seen:
+            seen.add(col)
+            out.append(col)
+    for col in _unqualified_columns(expr or ""):
+        if col not in seen:
+            seen.add(col)
+            out.append(col)
+    return out
+
+
+def _passthrough_ref(expr: str) -> str | None:
+    """If `expr` is just a column reference (``col`` or ``qualifier.col``),
+    return the bare column name; else None (it carries a real transformation)."""
+    e = (expr or "").strip()
+    if re.fullmatch(r"[\w]+", e):
+        return e
+    m = re.fullmatch(r"[\w]+\.([\w]+)", e)
+    return m.group(1) if m else None
+
+
+def _sql_refs_in_alias_map(
+    expr: str, alias_map: dict[str, dict[str, Any]]
+) -> list[str]:
+    """Column names in `expr` that are themselves intermediate CTE columns."""
+    out: list[str] = []
+    for n in _expr_col_refs(expr):
+        if n in alias_map and n not in out:
+            out.append(n)
+    return out
+
+
+def _build_sql_step_expr(
+    expr: str,
+    alias_map: dict[str, dict[str, Any]],
+    output_column: str | None,
+) -> str:
+    """SQL analogue of ``pyspark_ast_parser._build_step_expr``.
+
+    Intermediate CTE columns referenced by `expr` are expanded into ordered
+    steps (dependencies first), ending with the output column, e.g.
+
+        Step 1: amount_spent = SUM(total_amount)
+        Step 2: total_expenditure = SUM(amount_spent) OVER (PARTITION BY category)
+
+    A derivation with no intermediates returns just `expr` (no numbering).
+    """
+    seen: set[str] = set()
+    if output_column:
+        seen.add(output_column)
+    order: list[tuple[str, str]] = []
+
+    def visit(refs: list[str]) -> None:
+        for r in refs:
+            if r in seen or r not in alias_map or len(order) >= 20:
+                continue
+            seen.add(r)
+            sub = (alias_map[r].get("expr") or "").strip()
+            visit(_sql_refs_in_alias_map(sub, alias_map))
+            order.append((r, sub))
+
+    visit(_sql_refs_in_alias_map(expr, alias_map))
+    final = (expr or "").strip()
+    if not order:
+        return final
+    lines = [f"Step {i}: {name} = {e}" for i, (name, e) in enumerate(order, 1)]
+    lines.append(f"Step {len(order) + 1}: {output_column or 'result'} = {final}")
+    return "\n".join(lines)
+
+
+# Qualified column reference `alias.col`, both segments anchored to identifier
+# starts so a numeric literal (`0.9`, `12.5`) is NOT mistaken for `alias.col`
+# (plain `\w` matches digits, which mis-attributed the `9` in `gross * 0.9`).
+_QUALREF_RE = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
+
+# Clause keywords that must never be mistaken for a table alias when they follow
+# a FROM/JOIN target (`FROM filtered WHERE …`, `FROM a JOIN b` — "where"/"join"
+# are not aliases). Used as a negative lookahead in `_FROM_JOIN_SRC_RE` so the
+# optional-alias group does not swallow the next clause keyword (which would
+# skip the following JOIN source entirely).
+_ALIAS_STOPWORDS = {
+    "where", "group", "order", "having", "on", "using", "join", "inner", "left",
+    "right", "full", "outer", "cross", "natural", "window", "qualify", "limit",
+    "union", "except", "intersect", "cluster", "distribute", "sort", "lateral",
+}
+
+# FROM / JOIN source with an OPTIONAL alias, matching 1-, 2- OR 3-part names.
+# Unlike `_ALIAS_RE` (which reuses `_FQN` and so needs ≥2 parts), this also
+# captures a BARE single-identifier target — the shape a CTE reference takes
+# (`FROM filtered`, `JOIN per_customer pc`). Essential for tracing CTE-on-CTE
+# chains, whose intermediate references are always bare names.
+_FROM_JOIN_SRC_RE = re.compile(
+    r"\b(?:from|join)\s+(`?[\w]+`?(?:\.`?[\w]+`?){0,2})"
+    r"(?:\s+(?:as\s+)?(?!(?:" + "|".join(sorted(_ALIAS_STOPWORDS)) + r")\b)"
+    r"([`\"]?[\w]+[`\"]?))?",
+    re.IGNORECASE,
+)
+
+
+def _classify_query_sources(
     body: str,
+    cte_names: set[str],
     *,
     default_catalog: str | None,
     default_schema: str | None,
-) -> dict[str, tuple[str | None, str, str]]:
-    """Map a CTE's output columns -> (source_fqn, source_column, expr).
+) -> tuple[dict[str, tuple[str, str]], tuple[str, str] | None]:
+    """Classify a (CTE-body or main-query) FROM/JOIN sources.
 
-    Resolves each output the same way the main parser does, but SCOPED to the
-    CTE's own FROM/JOIN tables, so ``sum(lifetime_revenue) AS total_revenue``
-    inside ``FROM customer_lifetime_value`` attributes to that one table.
+    Returns ``(src_by_key, single_source)`` where `src_by_key` maps each alias /
+    bare name (lowercased) to a descriptor ``("cte", <name>)`` or
+    ``("base", <fqn>)``, and `single_source` is that descriptor when the body
+    reads exactly one source (else None — joins/multi-source degrade to
+    qualified-only resolution, as the pre-existing parser did).
     """
-    tables = extract_tables(body, default_catalog=default_catalog, default_schema=default_schema)
-    alias_map = extract_alias_map(body, default_catalog=default_catalog, default_schema=default_schema)
-    out: dict[str, tuple[str | None, str, str]] = {}
-    try:
-        stmts = sqlparse.parse(body)
-    except Exception:  # noqa: BLE001
-        stmts = []
-    aliases: list[dict[str, Any]] = []
-    for s in stmts:
-        aliases.extend(_aliases_from_one_stmt(s))
-    single_src = tables[0] if len(tables) == 1 else None
-    for a in aliases:
-        col = a["output_column"]
-        expr = a["expr"]
-        qual = re.findall(r"\b([\w]+)\.([\w]+)\b", expr)
-        if qual:
-            ta, sc = qual[0]
-            out[col] = (alias_map.get(ta.lower()), sc, expr)
+    src_by_key: dict[str, tuple[str, str]] = {}
+    descriptors: list[tuple[str, str]] = []
+    for m in _FROM_JOIN_SRC_RE.finditer(_unwrap_streaming_sources(body)):
+        raw = _strip_quotes(m.group(1))
+        last = raw.split(".")[-1].lower()
+        alias_raw = _strip_quotes(m.group(2)).lower() if m.group(2) else None
+        alias = alias_raw if alias_raw and alias_raw not in _ALIAS_STOPWORDS else None
+        if last in cte_names:
+            descr: tuple[str, str] = ("cte", last)
+            key = alias or last
         else:
-            ucols = _unqualified_columns(expr) if single_src else []
-            if single_src and ucols:
-                out[col] = (single_src, ucols[0], expr)
-            else:
-                out[col] = (None, col, expr)
-    return out
+            fqn = _qualify_fqn(
+                raw, default_catalog=default_catalog, default_schema=default_schema
+            )
+            descr = ("base", fqn)
+            key = alias or fqn.split(".")[-1].lower()
+        src_by_key[key] = descr
+        if descr not in descriptors:
+            descriptors.append(descr)
+    single = descriptors[0] if len(descriptors) == 1 else None
+    return src_by_key, single
+
+
+class _CteResolver:
+    """Resolves CTE columns to their ultimate base-table sources across a chain.
+
+    Walks the CTEs in definition order; each CTE's columns are resolved against
+    its own FROM sources, which may be earlier CTEs (traced through recursively)
+    or base tables. `alias_map` accumulates the non-trivial intermediate columns
+    (name -> resolved sources + defining expr) that `_build_sql_step_expr` inlines.
+    """
+
+    def __init__(self, default_catalog: str | None, default_schema: str | None) -> None:
+        self.default_catalog = default_catalog
+        self.default_schema = default_schema
+        self.alias_map: dict[str, dict[str, Any]] = {}
+        # cte_name -> {out_col -> {"bases": [(fqn, col), …], "expr": str}}
+        self.cte_cols: dict[str, dict[str, dict[str, Any]]] = {}
+        self.cte_single_src: dict[str, tuple[str, str] | None] = {}
+        self.cte_base: dict[str, str | None] = {}
+        self.cte_names: set[str] = set()
+
+    def _base_of(self, descr: tuple[str, str] | None) -> str | None:
+        if descr is None:
+            return None
+        kind, val = descr
+        return val if kind == "base" else self.cte_base.get(val)
+
+    def _resolve_from_cte(
+        self, cte_name: str, col: str, depth: int = 0
+    ) -> tuple[str | None, str]:
+        """Resolve `col` as produced by CTE `cte_name` to (base_fqn, base_col)."""
+        if depth > 50:
+            return (self.cte_base.get(cte_name), col)
+        entry = self.cte_cols.get(cte_name, {}).get(col)
+        if entry and entry["bases"]:
+            return entry["bases"][0]
+        # SELECT *-style passthrough: the column flows through from the source.
+        descr = self.cte_single_src.get(cte_name)
+        if descr is None:
+            return (self.cte_base.get(cte_name), col)
+        kind, val = descr
+        if kind == "base":
+            return (val, col)
+        return self._resolve_from_cte(val, col, depth + 1)
+
+    def _resolve_ref(
+        self,
+        tbl_alias: str | None,
+        col: str,
+        src_by_key: dict[str, tuple[str, str]],
+        single: tuple[str, str] | None,
+    ) -> tuple[str | None, str]:
+        descr = src_by_key.get(tbl_alias.lower()) if tbl_alias else None
+        if descr is None:
+            descr = single
+        if descr is None:
+            return (None, col)
+        kind, val = descr
+        if kind == "base":
+            return (val, col)
+        return self._resolve_from_cte(val, col)
+
+    def resolve_expr_bases(
+        self,
+        expr: str,
+        src_by_key: dict[str, tuple[str, str]],
+        single: tuple[str, str] | None,
+    ) -> list[tuple[str | None, str]]:
+        """Ultimate (base_fqn, base_col) sources feeding `expr`'s VALUE."""
+        core = _strip_over_clauses(expr or "")
+        bases: list[tuple[str | None, str]] = []
+        handled: set[str] = set()
+        for ta, col in _QUALREF_RE.findall(core):
+            bases.append(self._resolve_ref(ta, col, src_by_key, single))
+            handled.add(col)
+        core_bare = _QUALREF_RE.sub(" ", core)
+        for col in _unqualified_columns(core_bare):
+            if col in handled:
+                continue
+            bases.append(self._resolve_ref(None, col, src_by_key, single))
+        return list(dict.fromkeys(bases))
+
+    def build(self, ctes: list[tuple[str, str]]) -> None:
+        self.cte_names = {name.lower() for name, _ in ctes}
+        for name, body in ctes:
+            lname = name.lower()
+            src_by_key, single = _classify_query_sources(
+                body,
+                self.cte_names,
+                default_catalog=self.default_catalog,
+                default_schema=self.default_schema,
+            )
+            self.cte_single_src[lname] = single
+            self.cte_base[lname] = self._base_of(single)
+            try:
+                aliases: list[dict[str, Any]] = []
+                for s in sqlparse.parse(body):
+                    aliases.extend(_aliases_from_one_stmt(s))
+            except Exception:  # noqa: BLE001
+                aliases = []
+            this_cols: dict[str, dict[str, Any]] = {}
+            for a in aliases:
+                out_col = a["output_column"]
+                expr = a["expr"]
+                bases = self.resolve_expr_bases(expr, src_by_key, single)
+                this_cols[out_col] = {"bases": bases, "expr": expr}
+                # Register only real transformations as expandable intermediates;
+                # a trivial `col`/`t.col` passthrough with the same name would add
+                # `Step: col = col` noise to the step-wise expression.
+                pt = _passthrough_ref(expr)
+                if pt is None or pt != out_col:
+                    self.alias_map[out_col] = {
+                        "source_cols": [c for _f, c in bases] or [out_col],
+                        "source_fqn": bases[0][0] if bases else None,
+                        "expr": expr,
+                    }
+            self.cte_cols[lname] = this_cols
 
 
 def parse_sql_text(
@@ -408,27 +674,37 @@ def parse_sql_text(
         )
         stmt_aliases = _aliases_from_one_stmt(stmt)
 
+        # Detect a CTE block up front. A WITH alias referenced in a FROM clause
+        # looks like a table to `extract_tables`, so drop those phantom
+        # "CTE-as-table" names from table_references before pooling them.
+        ctes, main_sql = _extract_ctes(stmt_sql)
+        cte_names = {name.lower() for name, _ in ctes}
+        if cte_names:
+            stmt_tables = [
+                t for t in stmt_tables if t.split(".")[-1].lower() not in cte_names
+            ]
+
         all_tables.extend(stmt_tables)
         if artifact_output_fqn is None and stmt_output:
             artifact_output_fqn = stmt_output
 
-        # ── CTE-aware path ──────────────────────────────────────────
-        # `WITH cte AS (...) SELECT cte.col ...` — the outer SELECT references CTE
-        # aliases, not base tables. Resolve each CTE's columns to their base source
-        # (scoped to the CTE's own FROM), then map the main query's `cte.col`
-        # references through that. Without this, CTE refs resolve to nothing
-        # (phantom unresolved-external edges) and bare CTE columns can't attribute
-        # because the statement pools every CTE's tables.
-        ctes, main_sql = _extract_ctes(stmt_sql)
+        # ── CTE-aware path (multi-hop) ──────────────────────────────
+        # `WITH a AS (...), b AS (... FROM a) <main>` — the outer SELECT and each
+        # CTE reference CTE aliases, not always base tables. `_CteResolver` walks
+        # the chain, tracing every column through intermediate CTEs to its base
+        # table, and `_build_sql_step_expr` inlines the intermediate expressions
+        # into a numbered `Step 1 / Step 2 / …` derivation on the single edge —
+        # the SQL analogue of the PySpark AST parser. Without this, a `b.col`
+        # that traces through `a` resolves to nothing (phantom external edge) and
+        # multi-step transformations collapse to a bare column name.
         if ctes:
-            cte_maps = {
-                name.lower(): _cte_column_map(
-                    body, default_catalog=default_catalog, default_schema=default_schema
-                )
-                for name, body in ctes
-            }
-            main_alias_map = extract_alias_map(
-                main_sql, default_catalog=default_catalog, default_schema=default_schema
+            resolver = _CteResolver(default_catalog, default_schema)
+            resolver.build(ctes)
+            main_src_by_key, main_single = _classify_query_sources(
+                main_sql,
+                cte_names,
+                default_catalog=default_catalog,
+                default_schema=default_schema,
             )
             main_aliases: list[dict[str, Any]] = []
             try:
@@ -438,27 +714,36 @@ def parse_sql_text(
                 main_aliases = []
             for a in main_aliases:
                 out_col = a["output_column"]
-                expr = a["expr"]
-                for ta, col in re.findall(r"\b([\w]+)\.([\w]+)\b", expr):
-                    cte = cte_maps.get(ta.lower())
-                    if cte is not None:
-                        src_fqn, src_col, inner_expr = cte.get(col, (None, col, expr))
-                        all_mappings.append({
-                            "artifact_id": artifact_id, "output_column": out_col,
-                            "output_table_fqn": stmt_output,
-                            "source_ref": src_col, "source_fqn": src_fqn,
-                            "source_column": src_col,
-                            "expr": (inner_expr or expr)[:2000], "expr_lang": "sql",
-                        })
-                    else:
-                        all_mappings.append({
-                            "artifact_id": artifact_id, "output_column": out_col,
-                            "output_table_fqn": stmt_output,
-                            "source_ref": f"{ta}.{col}",
-                            "source_fqn": main_alias_map.get(ta.lower()),
-                            "source_column": col,
-                            "expr": expr[:2000], "expr_lang": "sql",
-                        })
+                raw_expr = a["expr"]
+                bases = resolver.resolve_expr_bases(
+                    raw_expr, main_src_by_key, main_single
+                )
+                # If the output is a plain passthrough of an intermediate
+                # (`SELECT cte.amount_spent`), show that intermediate's own
+                # derivation rather than the bare reference.
+                pt = _passthrough_ref(raw_expr)
+                disp_expr = (
+                    resolver.alias_map[pt]["expr"]
+                    if pt is not None and pt in resolver.alias_map
+                    else raw_expr
+                )
+                step_expr = _build_sql_step_expr(disp_expr, resolver.alias_map, out_col)
+                if not bases:
+                    all_mappings.append({
+                        "artifact_id": artifact_id, "output_column": out_col,
+                        "output_table_fqn": stmt_output,
+                        "source_ref": "", "source_fqn": None, "source_column": "",
+                        "expr": step_expr[:2000], "expr_lang": "sql",
+                    })
+                    continue
+                for src_fqn, src_col in bases:
+                    all_mappings.append({
+                        "artifact_id": artifact_id, "output_column": out_col,
+                        "output_table_fqn": stmt_output,
+                        "source_ref": src_col, "source_fqn": src_fqn,
+                        "source_column": src_col,
+                        "expr": step_expr[:2000], "expr_lang": "sql",
+                    })
             if main_aliases or stmt_tables or stmt_output:
                 statements_parsed += 1
             continue

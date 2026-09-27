@@ -55,6 +55,38 @@ def _default_language_for_path(path: str | None) -> str:
     return "python"
 
 
+def _language_from_source(raw: str) -> str | None:
+    """Authoritative notebook language from the source-format header line.
+
+    Databricks source-format notebooks encode the default language in the first
+    line's comment marker: ``# Databricks notebook source`` (Python),
+    ``-- Databricks notebook source`` (SQL), ``// Databricks notebook source``
+    (Scala). Workspace notebook PATHS have no file extension, so path-based
+    inference (`_infer_language_from_path` / `_default_language_for_path`) can't
+    tell a SQL notebook from a Python one and defaults to Python — which then
+    routes SQL notebooks to the PySpark parser and yields zero mappings. The
+    header settles it. Returns None when there is no recognizable header (e.g. a
+    raw git file), so the caller keeps its path/task-based guess.
+    """
+    if not raw:
+        return None
+    for line in raw.lstrip().splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        low = s.lower()
+        if "databricks notebook source" not in low:
+            return None  # first real line isn't the header — don't guess
+        if s.startswith("--"):
+            return "sql"
+        if s.startswith("//"):
+            return "scala"
+        if s.startswith("#"):
+            return "python"
+        return None
+    return None
+
+
 def _resolve_notebook_path(
     spark: SparkSession, notebook_id: str, lookback_days: int = 90
 ) -> str | None:
@@ -184,11 +216,16 @@ def _process_single_run(
 
     for t in tasks:
         lang_hint = t.language or _default_language_for_path(t.workspace_path or t.git_path)
-        if lang_hint not in ("sql", "python"):
-            continue
 
         raw, prov = fetch_resolved_source(client, t, git_http_token=cfg.git_http_token)
         if not raw.strip():
+            continue
+
+        # The notebook source header is authoritative and beats the path-based
+        # guess (a workspace notebook path has no extension, so a SQL notebook
+        # would otherwise be mis-detected as Python and skip the SQL parser).
+        lang_hint = _language_from_source(raw) or lang_hint
+        if lang_hint not in ("sql", "python"):
             continue
 
         cells = normalize_to_cells(raw, lang_hint)
