@@ -132,7 +132,18 @@ def ensure_lineage_schema(spark: SparkSession, cfg: LineageJobConfig) -> dict[st
 
     spark.sql(f"""
         CREATE TABLE IF NOT EXISTS {tables["notebook_path_cache"]} (
-          notebook_id STRING, nb_path STRING, resolved_at TIMESTAMP
+          notebook_id STRING, nb_path STRING, resolved_at TIMESTAMP,
+          workspace_id STRING
         ) USING DELTA CLUSTER BY (notebook_id)""")
+    # Notebook ids/paths are per-workspace; tables created before cross-workspace
+    # extraction lack the column (their NULL-workspace rows are ignored on read).
+    try:
+        cols = {f.name for f in spark.table(tables["notebook_path_cache"]).schema.fields}
+        if "workspace_id" not in cols:
+            spark.sql(
+                f"ALTER TABLE {tables['notebook_path_cache']} ADD COLUMNS (workspace_id STRING)"
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("notebook_path_cache workspace_id migration failed: %s", e)
 
     return tables

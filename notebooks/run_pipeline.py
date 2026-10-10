@@ -82,6 +82,12 @@ try:
 except Exception:
     FORCE_REPARSE = False
 
+# CROSS_WORKSPACE_FETCH: read producers from other workspaces via registered peers.
+try:
+    CROSS_WORKSPACE_FETCH = dbutils.widgets.get("CROSS_WORKSPACE_FETCH").strip().lower() in ("true", "1", "yes")
+except Exception:
+    CROSS_WORKSPACE_FETCH = False
+
 # Provide token for SDK calls
 os.environ["DATABRICKS_TOKEN"] = (
     dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
@@ -92,6 +98,7 @@ print(f"Source path: {BASE_PATH}")
 print(f"Target: {TARGET_CATALOG}.{TARGET_SCHEMA}")
 print(f"KPI Tables: {KPI_TABLES}")
 print(f"Build Only: {BUILD_ONLY}")
+print(f"Cross-workspace fetch: {CROSS_WORKSPACE_FETCH}")
 
 # COMMAND ----------
 
@@ -110,6 +117,7 @@ cfg = LineageJobConfig.from_dbutils(
     discovery_lookback_hours=DISCOVERY_LOOKBACK_HOURS,
     lineage_entity_types=LINEAGE_ENTITY_TYPES,
     force_reparse=FORCE_REPARSE,
+    cross_workspace_fetch=CROSS_WORKSPACE_FETCH,
 )
 
 t0 = time.time()

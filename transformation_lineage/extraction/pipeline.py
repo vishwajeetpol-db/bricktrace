@@ -14,7 +14,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Optional, Tuple
 
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
@@ -30,6 +30,12 @@ from transformation_lineage.extraction.fetcher import fetch_resolved_source, fet
 from transformation_lineage.extraction.normalize import cells_to_json, normalize_to_cells
 from transformation_lineage.extraction.reporting import DailyExtractionReport, merge_skip_reason
 from transformation_lineage.extraction.resolver import resolve_pipeline_libraries, resolve_run_tasks
+from transformation_lineage.extraction.workspace_clients import (
+    REGISTRY_TABLE_NAME,
+    PeerUnavailable,
+    WorkspaceClientProvider,
+    resolve_local_workspace_id,
+)
 from transformation_lineage.types import ExtractedArtifact
 
 logger = logging.getLogger(__name__)
@@ -87,77 +93,107 @@ def _language_from_source(raw: str) -> str | None:
     return None
 
 
+NotebookKey = Tuple[Optional[str], str]  # (workspace_id, notebook_id)
+
+
 def _resolve_notebook_path(
-    spark: SparkSession, notebook_id: str, lookback_days: int = 90
+    spark: SparkSession,
+    notebook_id: str,
+    lookback_days: int = 90,
+    workspace_id: str | None = None,
 ) -> str | None:
     """Resolve a single notebook entity_id to its workspace path via the audit log."""
-    return _resolve_notebook_paths_batch(spark, [notebook_id], lookback_days).get(str(notebook_id))
+    key = (workspace_id, str(notebook_id))
+    return _resolve_notebook_paths_batch(spark, [key], lookback_days).get(key)
 
 
 def _scan_audit_for_paths(
-    spark: SparkSession, ids: list[str], lookback_days: int
-) -> dict[str, str | None]:
-    """One grouped scan of system.access.audit to map notebookId -> path.
+    spark: SparkSession, keys: list[NotebookKey], lookback_days: int
+) -> dict[NotebookKey, str | None]:
+    """One grouped scan of system.access.audit to map (workspace, notebookId) -> path.
+
+    The audit table is account-wide and notebook ids are only unique per
+    workspace, so the path is taken from an audit row in the SAME workspace as
+    the lineage event. Keys with no workspace_id fall back to any workspace.
 
     Prunes on the `event_date` partition column; without a date predicate Spark
     scans the entire audit history (observed ~190s+).
     """
-    found: dict[str, str | None] = {}
-    if not ids:
+    found: dict[NotebookKey, str | None] = {}
+    if not keys:
         return found
     from pyspark.sql import functions as F
 
+    ids = sorted({nid for _, nid in keys})
     df = (
         spark.table("system.access.audit")
         .where(F.col("event_date") >= F.date_sub(F.current_date(), lookback_days))
         .where(F.col("request_params").getItem("notebookId").isin(ids))
         .where(F.col("request_params").getItem("path").isNotNull())
-        .groupBy(F.col("request_params").getItem("notebookId").alias("nb_id"))
+        .groupBy(
+            F.col("workspace_id").cast("string").alias("wid"),
+            F.col("request_params").getItem("notebookId").alias("nb_id"),
+        )
         .agg(F.first(F.col("request_params").getItem("path"), ignorenulls=True).alias("nb_path"))
     )
+    by_ws: dict[NotebookKey, str | None] = {}
+    any_ws: dict[str, str | None] = {}
     for row in df.collect():
-        if row["nb_id"] is not None:
-            found[str(row["nb_id"])] = row["nb_path"]
+        if row["nb_id"] is None:
+            continue
+        nid = str(row["nb_id"])
+        by_ws[(str(row["wid"]) if row["wid"] is not None else None, nid)] = row["nb_path"]
+        any_ws.setdefault(nid, row["nb_path"])
+    for wid, nid in keys:
+        path = by_ws.get((wid, nid)) if wid else any_ws.get(nid)
+        if path:
+            found[(wid, nid)] = path
     return found
 
 
 def _resolve_notebook_paths_batch(
     spark: SparkSession,
-    notebook_ids: list[str],
+    notebook_keys: list[NotebookKey],
     lookback_days: int = 90,
     cache_table: str | None = None,
-) -> dict[str, str | None]:
-    """Resolve notebook entity_ids -> workspace paths, audit-log scan cached in Delta.
+) -> dict[NotebookKey, str | None]:
+    """Resolve (workspace_id, notebook entity_id) -> workspace path, audit-log scan cached in Delta.
 
     Resolution is expensive (a grouped scan of the large system.access.audit table).
-    When `cache_table` is provided, previously-resolved ids are served from the cache
+    When `cache_table` is provided, previously-resolved keys are served from the cache
     and only cache-misses trigger the audit scan; new resolutions are written back so
-    the cost is paid once per notebook across all pipeline runs.
+    the cost is paid once per notebook across all pipeline runs. Cache rows written
+    before the cache carried `workspace_id` (NULL) are never served.
     """
-    result: dict[str, str | None] = {str(nid): None for nid in notebook_ids}
-    if not notebook_ids:
+    keys: list[NotebookKey] = [
+        (str(w) if w else None, str(n)) for w, n in notebook_keys
+    ]
+    result: dict[NotebookKey, str | None] = {k: None for k in keys}
+    if not keys:
         return result
-    ids = [str(nid) for nid in notebook_ids]
 
     # 1) Serve hits from the cache.
-    cached: dict[str, str | None] = {}
+    cached: dict[NotebookKey, str | None] = {}
     if cache_table:
         try:
             from pyspark.sql import functions as F
 
             rows = (
                 spark.table(cache_table)
-                .where(F.col("notebook_id").isin(ids))
-                .select("notebook_id", "nb_path")
+                .where(F.col("notebook_id").isin(sorted({n for _, n in keys})))
+                .where(F.col("workspace_id").isNotNull())
+                .select("workspace_id", "notebook_id", "nb_path")
                 .collect()
             )
-            cached = {str(r["notebook_id"]): r["nb_path"] for r in rows}
+            cached = {
+                (str(r["workspace_id"]), str(r["notebook_id"])): r["nb_path"] for r in rows
+            }
         except Exception as e:
             logger.warning("notebook path cache read failed: %s", e)
     result.update({k: v for k, v in cached.items() if k in result})
 
     # 2) Scan the audit log only for cache-misses.
-    missing = [i for i in ids if i not in cached]
+    missing = [k for k in keys if k not in cached]
     if not missing:
         return result
     try:
@@ -169,20 +205,22 @@ def _resolve_notebook_paths_batch(
         if k in result:
             result[k] = v
 
-    # 3) Write newly-resolved (non-null) paths back to the cache.
+    # 3) Write newly-resolved (non-null) paths back to the cache. Keys without a
+    #    workspace_id aren't cached — they couldn't be served back safely.
     if cache_table and found:
         try:
             from datetime import datetime, timezone
 
             now = datetime.now(timezone.utc)
             new_rows = [
-                {"notebook_id": k, "nb_path": v, "resolved_at": now}
-                for k, v in found.items()
-                if v
+                {"notebook_id": n, "nb_path": v, "resolved_at": now, "workspace_id": w}
+                for (w, n), v in found.items()
+                if v and w
             ]
             if new_rows:
                 (
                     spark.createDataFrame(new_rows)
+                    .select("notebook_id", "nb_path", "resolved_at", "workspace_id")
                     .write.format("delta").mode("append").saveAsTable(cache_table)
                 )
         except Exception as e:
@@ -202,8 +240,12 @@ def _process_single_run(
     client: WorkspaceClient,
     run_id: int,
     cfg: LineageJobConfig,
+    id_scope: str = "",
 ) -> list[ExtractedArtifact]:
-    """Resolve + fetch + normalize a single job run. Thread-safe."""
+    """Resolve + fetch + normalize a single job run. Thread-safe.
+
+    `id_scope` namespaces the extraction id for a peer workspace (see `_ws_scope`).
+    """
     artifacts: list[ExtractedArtifact] = []
     try:
         tasks = resolve_run_tasks(client, run_id)
@@ -230,7 +272,7 @@ def _process_single_run(
 
         cells = normalize_to_cells(raw, lang_hint)
         norm_json = cells_to_json(cells)
-        eid = _stable_extraction_id(run_id, t.task_key, prov)
+        eid = _stable_extraction_id(run_id, t.task_key, id_scope + prov)
         path = t.workspace_path or t.git_path
         artifacts.append(
             ExtractedArtifact(
@@ -426,11 +468,16 @@ def run_extraction_phase(
     cfg: LineageJobConfig,
     *,
     workspace_client_factory: Callable[[], WorkspaceClient] | None = None,
+    client_provider: WorkspaceClientProvider | None = None,
     max_concurrency: int = _DEFAULT_CONCURRENCY,
     notebook_path_cache_table: str | None = None,
 ) -> tuple[list[ExtractedArtifact], DailyExtractionReport]:
     """
     Discover runs from system lineage, fetch code per task, return artifacts + daily report.
+
+    Discovery is metastore-wide, so each producer is read through a client for
+    the workspace it ran in (`client_provider`). Producers in a workspace with no
+    usable client are skipped with a skip reason rather than read locally.
 
     Uses ThreadPoolExecutor for parallel API calls (configurable via max_concurrency).
     """
@@ -444,6 +491,27 @@ def run_extraction_phase(
         return WorkspaceClient(host=cfg.databricks_host, token=cfg.databricks_token)
 
     client = _client()
+    provider = client_provider or WorkspaceClientProvider(
+        client,
+        resolve_local_workspace_id(client, spark),
+        spark=spark,
+        registry_table=cfg.fully_qualified(REGISTRY_TABLE_NAME),
+        enabled=cfg.cross_workspace_fetch,
+    )
+
+    def _ws_scope(workspace_id: str | None) -> str:
+        """Extraction-id prefix: the same path in two workspaces is two artifacts.
+        Empty for the local workspace so existing ids are unchanged."""
+        return "" if provider.is_local(workspace_id) else f"ws:{workspace_id}:"
+
+    def _client_for(workspace_id: str | None, what: str) -> WorkspaceClient | None:
+        """Client for a producer's workspace, or None (skip reason recorded)."""
+        try:
+            return provider.get(workspace_id)
+        except PeerUnavailable as e:
+            logger.warning("Skipping %s (workspace %s): %s", what, workspace_id, e)
+            merge_skip_reason(report, e.reason)
+            return None
 
     _t = time.time()
     disc = discover_lineage_runs(
@@ -482,10 +550,13 @@ def run_extraction_phase(
 
     _t = time.time()
     with ThreadPoolExecutor(max_workers=max_concurrency) as pool:
-        futures = {
-            pool.submit(_process_single_run, client, rid, cfg): rid
-            for rid in run_ids
-        }
+        futures = {}
+        for wid, rid in run_ids:
+            run_client = _client_for(wid, f"job run {rid}")
+            if run_client is not None:
+                futures[pool.submit(
+                    _process_single_run, run_client, rid, cfg, _ws_scope(wid)
+                )] = rid
         for future in as_completed(futures):
             rid = futures[future]
             try:
@@ -514,7 +585,7 @@ def run_extraction_phase(
     # expensive audit-log scan is paid once per notebook; only cache-misses are scanned.
     _t = time.time()
     audit_lookback_days = max(1, (cfg.discovery_lookback_hours + 23) // 24) + 7
-    nb_paths: dict[str, str | None] = _resolve_notebook_paths_batch(
+    nb_paths: dict[NotebookKey, str | None] = _resolve_notebook_paths_batch(
         spark, list(notebook_ids),
         lookback_days=audit_lookback_days,
         cache_table=notebook_path_cache_table,
@@ -522,13 +593,16 @@ def run_extraction_phase(
     report.timings["notebook_resolve"] = round(time.time() - _t, 1)
     report.timings["notebook_count"] = len(notebook_ids)
 
-    def _fetch_notebook(nb_id: str) -> ExtractedArtifact | None:
-        nb_path = nb_paths.get(nb_id)
+    def _fetch_notebook(
+        nb_client: WorkspaceClient, key: NotebookKey
+    ) -> ExtractedArtifact | None:
+        nb_id = key[1]
+        nb_path = nb_paths.get(key)
         if not nb_path:
             return None
         lang_hint = _default_language_for_path(nb_path)
         try:
-            raw = fetch_workspace_source(client, nb_path)
+            raw = fetch_workspace_source(nb_client, nb_path)
         except Exception as e:
             logger.warning("fetch failed notebook=%s: %s", nb_path, e)
             return None
@@ -538,7 +612,9 @@ def run_extraction_phase(
         norm_json = cells_to_json(cells)
         numeric_id = _safe_int(nb_id)
         run_id_for_artifact = numeric_id if numeric_id is not None else hash(nb_id) & 0x7FFFFFFFFFFFFFFF
-        eid = _stable_extraction_id(run_id_for_artifact, None, f"workspace:{nb_path}")
+        eid = _stable_extraction_id(
+            run_id_for_artifact, None, f"{_ws_scope(key[0])}workspace:{nb_path}"
+        )
         return ExtractedArtifact(
             extraction_id=eid,
             run_id=run_id_for_artifact,
@@ -555,10 +631,14 @@ def run_extraction_phase(
 
     _t = time.time()
     with ThreadPoolExecutor(max_workers=max_concurrency) as pool:
-        futures = {pool.submit(_fetch_notebook, nb_id): nb_id for nb_id in notebook_ids}
+        futures = {}
+        for key in notebook_ids:
+            report.runs_attempted += 1
+            nb_client = _client_for(key[0], f"notebook {key[1]}")
+            if nb_client is not None:
+                futures[pool.submit(_fetch_notebook, nb_client, key)] = key[1]
         for future in as_completed(futures):
             nb_id = futures[future]
-            report.runs_attempted += 1
             try:
                 result = future.result()
                 if result:
@@ -583,21 +663,23 @@ def run_extraction_phase(
         logger.info("Processing %d pipeline entities with concurrency=%d",
                     len(pipeline_ids), max_concurrency)
 
-        def _fetch_pipeline(pid: str) -> list[ExtractedArtifact]:
+        def _fetch_pipeline(
+            pl_client: WorkspaceClient, pid: str, id_scope: str
+        ) -> list[ExtractedArtifact]:
             out: list[ExtractedArtifact] = []
-            for src in resolve_pipeline_libraries(client, pid):
+            for src in resolve_pipeline_libraries(pl_client, pid):
                 lang = src.language or _default_language_for_path(src.workspace_path or src.git_path)
                 if lang not in ("sql", "python"):
                     continue
                 try:
-                    raw, prov = fetch_resolved_source(client, src, git_http_token=cfg.git_http_token)
+                    raw, prov = fetch_resolved_source(pl_client, src, git_http_token=cfg.git_http_token)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("pipeline library fetch failed pid=%s: %s", pid, e)
                     continue
                 if not raw.strip():
                     continue
                 cells = normalize_to_cells(raw, lang)
-                eid = _stable_extraction_id(0, src.task_key, f"pipeline:{prov}")
+                eid = _stable_extraction_id(0, src.task_key, f"{id_scope}pipeline:{prov}")
                 out.append(
                     ExtractedArtifact(
                         extraction_id=eid,
@@ -617,10 +699,14 @@ def run_extraction_phase(
 
         _t = time.time()
         with ThreadPoolExecutor(max_workers=max_concurrency) as pool:
-            futures = {pool.submit(_fetch_pipeline, pid): pid for pid in pipeline_ids}
+            futures = {}
+            for wid, pid in pipeline_ids:
+                report.runs_attempted += 1
+                pl_client = _client_for(wid, f"pipeline {pid}")
+                if pl_client is not None:
+                    futures[pool.submit(_fetch_pipeline, pl_client, pid, _ws_scope(wid))] = pid
             for future in as_completed(futures):
                 pid = futures[future]
-                report.runs_attempted += 1
                 try:
                     res = future.result()
                     if res:

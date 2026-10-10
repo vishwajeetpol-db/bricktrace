@@ -502,6 +502,16 @@ def submit_build_job(
         raise
 
 
+def _cross_workspace_fetch_enabled() -> bool:
+    """The Control Panel `federated_sync.live_source_fetch` flag; off on any error."""
+    try:
+        from backend.feature_flags import get_flag_state
+        return get_flag_state("federated_sync.live_source_fetch")
+    except Exception as e:  # noqa: BLE001
+        logger.info(f"live_source_fetch flag unreadable, cross-workspace fetch off: {e}")
+        return False
+
+
 def _submit_reserved_build_job(
     target_table_fqn: str,
     notebook_path: str,
@@ -551,6 +561,9 @@ def _submit_reserved_build_job(
                     # instead of silently finding nothing. Kept in sync with the
                     # app's diagnose window via the same env var.
                     "DISCOVERY_LOOKBACK_HOURS": os.environ.get("DISCOVERY_LOOKBACK_HOURS", "8760"),
+                    # Read producers that ran in other workspaces of the metastore
+                    # through their registered peer (federated_workspaces registry).
+                    "CROSS_WORKSPACE_FETCH": "true" if _cross_workspace_fetch_enabled() else "false",
                 },
             },
             "environment_key": "Default",

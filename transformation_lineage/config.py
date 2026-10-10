@@ -51,6 +51,13 @@ class LineageJobConfig:
     # it because the source content is unchanged).
     force_reparse: bool = False
 
+    # Read producers that ran in OTHER workspaces of this metastore through a
+    # client for that workspace (peers from the `federated_workspaces` registry).
+    # Off: such producers are skipped (`cross_workspace_disabled`) rather than read
+    # through the local workspace. Set by the app from the
+    # `federated_sync.live_source_fetch` Control Panel flag.
+    cross_workspace_fetch: bool = False
+
     @classmethod
     def from_environment(
         cls,

@@ -86,45 +86,58 @@ def dataframe_to_discovered_runs(df: DataFrame) -> list[DiscoveredRun]:
     return out
 
 
-def distinct_run_ids(df: DataFrame) -> list[int]:
-    """Unique numeric job run ids from discovery (entity_run_id).
+def _wid(value) -> str | None:
+    s = str(value).strip() if value is not None else ""
+    return s or None
 
-    Uses try_cast so non-numeric IDs (e.g. NOTEBOOK UUIDs) become NULL
-    and are filtered out instead of raising CAST_INVALID_INPUT.
+
+def distinct_run_ids(df: DataFrame) -> list[tuple[str | None, int]]:
+    """Unique `(workspace_id, job run id)` pairs from discovery (entity_run_id).
+
+    Run ids are only meaningful inside the workspace that ran them, so each is
+    kept with its `workspace_id` for client selection. Uses try_cast so
+    non-numeric IDs (e.g. NOTEBOOK UUIDs) become NULL and are filtered out
+    instead of raising CAST_INVALID_INPUT.
     """
-    ids = (
-        df.select(F.expr("try_cast(entity_run_id AS bigint)").alias("run_id"))
+    rows = (
+        df.select(
+            F.col("workspace_id"),
+            F.expr("try_cast(entity_run_id AS bigint)").alias("run_id"),
+        )
         .where(F.col("run_id").isNotNull())
         .distinct()
         .collect()
     )
-    return sorted({int(r["run_id"]) for r in ids})
+    return sorted(
+        {(_wid(r["workspace_id"]), int(r["run_id"])) for r in rows},
+        key=lambda p: (p[0] or "", p[1]),
+    )
 
 
-def distinct_notebook_entities(df: DataFrame) -> list[str]:
-    """Unique notebook entity_ids from NOTEBOOK rows in the discovery DataFrame."""
-    ids = (
-        df.where(F.col("entity_type") == "NOTEBOOK")
-        .select(F.col("entity_id"))
+def _distinct_entities(df: DataFrame, entity_type: str) -> list[tuple[str | None, str]]:
+    rows = (
+        df.where(F.col("entity_type") == entity_type)
+        .select(F.col("workspace_id"), F.col("entity_id"))
         .where(F.col("entity_id").isNotNull())
         .distinct()
         .collect()
     )
-    return sorted({str(r["entity_id"]) for r in ids})
+    return sorted(
+        {(_wid(r["workspace_id"]), str(r["entity_id"])) for r in rows},
+        key=lambda p: (p[0] or "", p[1]),
+    )
 
 
-def distinct_pipeline_entities(df: DataFrame) -> list[str]:
-    """Unique pipeline_ids from PIPELINE rows in the discovery DataFrame.
+def distinct_notebook_entities(df: DataFrame) -> list[tuple[str | None, str]]:
+    """Unique `(workspace_id, notebook entity_id)` pairs from NOTEBOOK rows."""
+    return _distinct_entities(df, "NOTEBOOK")
+
+
+def distinct_pipeline_entities(df: DataFrame) -> list[tuple[str | None, str]]:
+    """Unique `(workspace_id, pipeline_id)` pairs from PIPELINE rows.
 
     Lakeflow Declarative (DLT) pipelines attribute lineage with
     entity_type='PIPELINE' and entity_id=<pipeline_id>; these are resolved to
     their source libraries (notebooks/files) by the resolver.
     """
-    ids = (
-        df.where(F.col("entity_type") == "PIPELINE")
-        .select(F.col("entity_id"))
-        .where(F.col("entity_id").isNotNull())
-        .distinct()
-        .collect()
-    )
-    return sorted({str(r["entity_id"]) for r in ids})
+    return _distinct_entities(df, "PIPELINE")

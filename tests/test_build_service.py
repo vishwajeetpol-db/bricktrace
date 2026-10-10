@@ -352,6 +352,25 @@ class TestBuildSubmission:
             assert params["FORCE_REPARSE"] == "true"
             assert params["BUILD_ONLY"] == "true"
 
+    @pytest.mark.parametrize("flag_on,expected", [(True, "true"), (False, "false")])
+    def test_submit_passes_cross_workspace_flag(self, flag_on, expected):
+        """CROSS_WORKSPACE_FETCH mirrors the live_source_fetch Control Panel flag."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"run_id": 1}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("backend.build_service._get_client") as mock_client, \
+             patch("backend.build_service.http_client.post", return_value=mock_resp) as mock_post, \
+             patch("backend.feature_flags.get_flag_state", return_value=flag_on):
+            mock_client.return_value.config.host = "https://host.databricks.com"
+            mock_client.return_value.config.authenticate.return_value = {"Authorization": "Bearer tok"}
+
+            self.bs.submit_build_job("main.gold.customers", "main", "gold")
+
+            payload = mock_post.call_args.kwargs["json"]
+            params = payload["tasks"][0]["notebook_task"]["base_parameters"]
+            assert params["CROSS_WORKSPACE_FETCH"] == expected
+
     def test_submit_url_uses_host(self):
         """API call goes to the correct host."""
         mock_resp = MagicMock()

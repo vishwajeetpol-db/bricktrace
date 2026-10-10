@@ -375,6 +375,26 @@ attaches its OAuth bearer token to each call. The sole thing that ever *runs* in
 a peer workspace is the optional Phase 1 plan-capture job, which captures
 executed plans (not source) into a UC table.
 
+**Deterministic extraction (the build job).** The static parser's extraction
+phase (`transformation_lineage/extraction/pipeline.py`) routes the same way.
+Discovery keeps each run / notebook / pipeline with its `workspace_id`, and
+`WorkspaceClientProvider` (`transformation_lineage/extraction/workspace_clients.py`)
+hands out the local client or a peer client built from the **same
+`federated_workspaces` registry**, read through Spark (the job ships only
+`transformation_lineage`, not `backend/`). Notebook paths are resolved from
+`system.access.audit` rows in the **same workspace** as the lineage event, and
+`lineage_notebook_path_cache` is keyed by `(workspace_id, notebook_id)`. Peer
+artifacts get a `ws:<id>:` prefix in their extraction id so the same path in two
+workspaces stays two artifacts (local ids are unchanged). The app passes
+`CROSS_WORKSPACE_FETCH` from the `live_source_fetch` flag. With it off, or with
+no usable peer, the producer is **skipped with a skip reason**
+(`cross_workspace_disabled`, `peer_workspace_unregistered`, `peer_auth_unsupported`,
+`peer_credentials_unreadable`, `peer_host_invalid`, `peer_client_error`) instead of
+being read through the local workspace. `auth_kind = app_sp` peers can't be used
+here: the app's OAuth secret exists only in the Apps runtime, so the build job
+needs a secret-scope credential (`account_sp` / `workspace_sp`) that its identity
+can READ.
+
 ### 7.6 Authorization & security (the hard part)
 
 Three gates, all must pass before a byte of peer source is read:
