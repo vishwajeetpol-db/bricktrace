@@ -9,16 +9,21 @@ from typing import Any
 
 _MAGIC = re.compile(r"^\s*%\s*\w+.*$", re.MULTILINE)
 
-# Databricks source-format notebooks separate cells with `# COMMAND ----------`.
-# Anchored to start-of-line so it doesn't accidentally match content inside
-# string literals.
-_DBX_CELL_SEPARATOR = re.compile(r"^\s*#\s*COMMAND\s*-+\s*$", re.MULTILINE)
+# Databricks source-format notebooks separate cells with `<c> COMMAND ----------`,
+# where <c> is the notebook language's line-comment marker: `#` (Python), `--`
+# (SQL) or `//` (Scala). Anchored to start-of-line so it doesn't accidentally
+# match content inside string literals.
+_COMMENT_MARKER = r"(?:#|--|//)"
+_DBX_CELL_SEPARATOR = re.compile(rf"^\s*{_COMMENT_MARKER}\s*COMMAND\s*-+\s*$", re.MULTILINE)
 
 # In Databricks source-format notebooks, non-default-language cells are
-# encoded as `# MAGIC %sql` (or %python/%scala/%r/%md) followed by lines
-# prefixed with `# MAGIC `. Detect the language and strip the prefix so the
+# encoded as `<c> MAGIC %sql` (or %python/%scala/%r/%md) followed by lines
+# prefixed with `<c> MAGIC `. Detect the language and strip the prefix so the
 # downstream parser sees raw SQL/Python instead of a wall of comments.
-_DBX_MAGIC_LANG = re.compile(r"^\s*#\s*MAGIC\s+%(\w+)\b", re.MULTILINE)
+_DBX_MAGIC_LANG = re.compile(rf"^\s*{_COMMENT_MARKER}\s*MAGIC\s+%(\w+)\b", re.MULTILINE)
+_DBX_MAGIC_LINE = re.compile(rf"^\s*{_COMMENT_MARKER}\s*MAGIC(?: |$)(.*)$")
+_DBX_MAGIC_DIRECTIVE = re.compile(rf"^\s*{_COMMENT_MARKER}\s*MAGIC\s+%")
+_DBX_TITLE = re.compile(rf"^\s*{_COMMENT_MARKER}\s*DBTITLE\b")
 
 
 def strip_magic_blocks(source: str) -> str:
@@ -41,19 +46,16 @@ def _decode_dbx_magic_cell(cell_text: str, default_lang: str) -> tuple[str, str]
     lang = m.group(1).lower()
     out_lines: list[str] = []
     for line in cell_text.splitlines():
-        stripped = line.lstrip()
-        if stripped.startswith("# MAGIC %"):
+        if _DBX_MAGIC_DIRECTIVE.match(line):
             # The %lang declaration itself is metadata, not code.
             continue
-        if stripped.startswith("# DBTITLE"):
+        if _DBX_TITLE.match(line):
             continue
-        if stripped.startswith("# MAGIC"):
-            # Remove the `# MAGIC` prefix (and the single space after it,
+        magic = _DBX_MAGIC_LINE.match(line)
+        if magic:
+            # Remove the `<c> MAGIC` prefix (and the single space after it,
             # if present) to recover the underlying SQL/Python line.
-            content = line[line.index("# MAGIC") + len("# MAGIC"):]
-            if content.startswith(" "):
-                content = content[1:]
-            out_lines.append(content)
+            out_lines.append(magic.group(1))
         else:
             out_lines.append(line)
     return lang, "\n".join(out_lines)
@@ -63,7 +65,7 @@ def split_dbx_source_cells(raw: str) -> list[str] | None:
     """Split a Databricks source-format notebook into cell bodies.
 
     Returns the list of per-cell sources if the notebook uses the
-    ``# COMMAND ----------`` separator format, else None so the caller can
+    ``<c> COMMAND ----------`` separator format (``#``, ``--`` or ``//``), else None so the caller can
     fall back to treating ``raw`` as a single cell.
     """
     if not _DBX_CELL_SEPARATOR.search(raw):

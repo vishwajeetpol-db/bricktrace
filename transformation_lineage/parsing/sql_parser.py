@@ -624,6 +624,47 @@ class _CteResolver:
             self.cte_cols[lname] = this_cols
 
 
+def _strip_sql_comments(sql: str) -> str:
+    """Remove `-- ...` line comments and `/* ... */` block comments, outside
+    quoted strings / identifiers, keeping newlines.
+
+    A trailing comment on a select-list line (`count(*) AS n,  -- note`) would
+    otherwise be glued onto the NEXT select item when the list is split on
+    commas, so that item's expression (and its source columns) is lost.
+    """
+    out: list[str] = []
+    i, n = 0, len(sql)
+    quote: str | None = None
+    while i < n:
+        ch = sql[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and quote != "`" and i + 1 < n:
+                out.append(sql[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            out.append(ch)
+            i += 1
+        elif sql.startswith("--", i):
+            j = sql.find("\n", i)
+            i = n if j == -1 else j
+        elif sql.startswith("/*", i):
+            j = sql.find("*/", i + 2)
+            block = sql[i:] if j == -1 else sql[i:j + 2]
+            out.append("\n" * block.count("\n") or " ")
+            i = n if j == -1 else j + 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
 def parse_sql_text(
     sql: str,
     *,
@@ -645,6 +686,7 @@ def parse_sql_text(
     scanning the joined notebook SQL); they're used to promote 1- or 2-part
     identifiers to fully-qualified 3-part FQNs.
     """
+    sql = _strip_sql_comments(sql)
     try:
         stmts = sqlparse.parse(sql)
     except Exception as e:

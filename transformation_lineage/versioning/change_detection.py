@@ -32,7 +32,10 @@ from pyspark.errors import AnalysisException
 #   6  step-wise expression builder, join-derived lineage, cross-cell .withColumn
 #      chains (commit 39267bf shipped these parser gains but never bumped the key,
 #      so unchanged notebooks kept the pre-fix mapping_count=0 result forever)
-PARSER_VERSION = "6"
+#   7  SQL multi-hop CTE lineage; SQL/Scala notebooks split on `-- COMMAND` /
+#      `// COMMAND` (were one cell, so every statement took the first target);
+#      SQL comments stripped before select-list splitting
+PARSER_VERSION = "7"
 
 
 def content_sha256(text: str) -> str:
