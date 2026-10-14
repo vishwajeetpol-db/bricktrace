@@ -247,11 +247,10 @@ def _process_single_run(
     `id_scope` namespaces the extraction id for a peer workspace (see `_ws_scope`).
     """
     artifacts: list[ExtractedArtifact] = []
-    try:
-        tasks = resolve_run_tasks(client, run_id)
-    except Exception as e:
-        logger.warning("resolve_run_tasks failed run_id=%s: %s", run_id, e)
-        return []
+    # A resolve failure (e.g. the identity lacks access in the run's workspace)
+    # propagates so the caller records it as `resolve_error` with the API message,
+    # rather than an indistinguishable `no_resolvable_tasks`.
+    tasks = resolve_run_tasks(client, run_id)
 
     if not tasks:
         return []
