@@ -136,6 +136,12 @@ Deploying to your own workspace is a short ordered checklist — not every step 
 
 > `make deploy` / `make redeploy` run this automatically. Re-run it after anything that re-creates the bundle root — a first deploy, a deploy from a different identity, a renamed bundle or target, or a `bundle destroy`. It is idempotent, and it only ever *adds* an ACL entry (`CAN_RUN` on that one folder for that one SP). Table and column lineage work without it; only transformation-lineage **builds** need it.
 
+**3b. Make the app's service principal admin on every workspace on the metastore** (for cross-workspace transformation lineage). System tables are metastore-wide, so a column can be produced by a job or notebook in another workspace; the build fetches that source as the app SP, which needs to be able to use the other workspace and read its objects:
+
+    ./grant_workspace_admin.sh --profile <profile> --app <app-name> [--account-profile <account-profile>] [--dry-run]
+
+> `make deploy` / `make redeploy` run this automatically (non-fatal). With `--account-profile` (`ACCOUNT_PROFILE=` for make; needs **account admin**) it covers every workspace assigned to the metastore via workspace assignment. Without it, it needs only **workspace admin**: it checks your CLI profiles (or `--workspace-profiles "p1 p2"`), keeps those on the same metastore, and adds the SP to each one's `admins` group, so workspaces you have no profile for are not covered. This makes the app SP an admin of each of those workspaces, including the app's own, so run `--dry-run` first to see the list. It is idempotent.
+
 **4. Grant the app's service principal** (as a **metastore admin**). The SP only exists after step 2. Easiest path — the helper resolves the SP and applies the grants:
 
     chmod +x grant_app_access.sh    # first time only — the script may land non-executable after clone

@@ -1083,6 +1083,7 @@ lineage-explorer/
 | `bundle deploy` missing variable | No `--var warehouse_id` | Add `--var warehouse_id=<id>` to the deploy command |
 | Build fails: "Unable to access the notebook ... lacks the required permissions" | The app SPN has no `CAN_RUN` on the bundle source folder `bundle deploy` uploaded into the deployer's home | Run `./grant_build_source_access.sh --profile <profile> --app <app>` as the deploying identity, then Regenerate |
 | "The app's service principal cannot reach the deployed build notebook" (503 on Generate) | Same cause, caught by the pre-submit check before any serverless compute is spent | Same fix — the message names the script |
+| Build skips a producer in another workspace (`resolve_error` / "This API is disabled for users without … entitlements") | The app SPN isn't usable in that workspace (no entitlements / no access to the job or notebook) | Run `./grant_workspace_admin.sh --profile <profile> --app <app>` (add `--account-profile <account-profile>` to cover every workspace on the metastore), then Regenerate |
 | 429 Too Many Requests | Rate limit exceeded | Increase `RATE_LIMIT_MAX_REQUESTS` env var. Admin dashboard auto-refreshes every 10s -- set to `200` for dev environments. |
 | 400 "Invalid catalog" | Special chars in identifier | Use only alphanumeric + underscores |
 | Live toggle disabled for all | Workspace preview not enabled | Enable "Databricks Apps - On-Behalf-Of User Authorization Public Preview" in Settings > Workspace > Previews |

@@ -9,6 +9,7 @@
 # Common flows:
 #   make redeploy      # build frontend + deploy bundle + run (the full, safe path)
 #   make grant-source  # let the app SP read its deployed source (transform builds)
+#   make grant-workspaces  # make the app SP admin on every workspace on the metastore
 #   make run           # re-apply env + start the app (fixes "warehouse not set")
 #   make deploy        # upload bundle only
 #   make status        # app + compute status
@@ -34,6 +35,11 @@ LINEAGE_SCHEMA   ?= bricktrace_lineage
 CAPTURED_PLANS_TABLE ?= pritam_demo_workspace_catalog.lineage_explorer.captured_plans
 CAPTURED_CDC_TABLE   ?= pritam_demo_workspace_catalog.lineage_explorer.captured_cdc_specs
 APP_URL          ?= https://bricktrace-dev-7474659775414644.aws.databricksapps.com
+# grant-workspaces: an account-admin CLI profile covers every workspace on the
+# metastore; without one it scans WORKSPACE_PROFILES (default: all your CLI
+# profiles) for workspaces on the same metastore.
+ACCOUNT_PROFILE    ?=
+WORKSPACE_PROFILES ?=
 
 # The --var overrides that MUST accompany every deploy/run for this workspace.
 VARS = --var="warehouse_id=$(WAREHOUSE_ID)" \
@@ -45,7 +51,7 @@ VARS = --var="warehouse_id=$(WAREHOUSE_ID)" \
 DBX  = databricks
 BUNDLE_FLAGS = -t $(TARGET) --profile $(PROFILE) $(VARS)
 
-.PHONY: help build deploy grant-source run redeploy status diagnostics logs login token open
+.PHONY: help build deploy grant-source grant-workspaces run redeploy status diagnostics logs login token open
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?#' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?#"}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -69,10 +75,24 @@ deploy: # Upload the bundle (source + resources) — does NOT restart with env
 	  echo "           make grant-source PROFILE=$(PROFILE) TARGET=$(TARGET)"; \
 	  echo ""; \
 	} >&2
+	@# Same non-fatal reasoning: only cross-workspace transform builds need it.
+	@$(MAKE) --no-print-directory grant-workspaces || { \
+	  echo ""; \
+	  echo "WARNING: grant-workspaces failed — the deploy itself succeeded."; \
+	  echo "         Producers in other workspaces will be skipped until you re-run:"; \
+	  echo "           make grant-workspaces PROFILE=$(PROFILE) TARGET=$(TARGET) [ACCOUNT_PROFILE=<account-profile>]"; \
+	  echo ""; \
+	} >&2
 
 grant-source: # Grant the app SP CAN_RUN on the deployed source (transform builds need it)
 	@$(if $(APP_NAME),,$(error TARGET=$(TARGET) has no APP_NAME_$(TARGET); set APP_NAME=<app> explicitly))
 	@./grant_build_source_access.sh --profile $(PROFILE) --app $(APP_NAME)
+
+grant-workspaces: # Make the app SP workspace admin on every workspace attached to the metastore
+	@$(if $(APP_NAME),,$(error TARGET=$(TARGET) has no APP_NAME_$(TARGET); set APP_NAME=<app> explicitly))
+	@./grant_workspace_admin.sh --profile $(PROFILE) --app $(APP_NAME) \
+	  $(if $(ACCOUNT_PROFILE),--account-profile $(ACCOUNT_PROFILE)) \
+	  $(if $(WORKSPACE_PROFILES),--workspace-profiles "$(WORKSPACE_PROFILES)")
 
 run: # Re-apply env config + (re)start the app — fixes "warehouse not set"
 	$(DBX) bundle run $(APP) $(BUNDLE_FLAGS)
